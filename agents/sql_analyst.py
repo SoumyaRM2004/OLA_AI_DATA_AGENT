@@ -216,6 +216,8 @@ CRITICAL SCHEMA LIMITATION RULES:
    - For correlation between rides and weather, join via users and hourly timestamp:
      `JOIN public.users u ON rides.rider_id = u.user_id JOIN public.weather_data w ON u.city = w.city AND DATE_TRUNC('hour', rides.requested_at) = w.recorded_at`
      (or date match: `u.city = w.city AND rides.requested_at::date = w.recorded_at::date`).
+   - COMPARATIVE WEATHER QUERIES: If the user asks whether rain increases, decreases, or is associated with cancellations, fares, or surge in a city (e.g. Ottawa) or overall, generate a query comparing BOTH rainy and non-rainy conditions (e.g. `w.is_rainy`, ride count, cancellations, cancellation rate) so a direct, valid comparison can be made:
+     `SELECT u.city, w.is_rainy, COUNT(r.ride_id) AS total_rides, SUM(CASE WHEN r.status = 'cancelled' THEN 1 ELSE 0 END) AS cancellations, ROUND(SUM(CASE WHEN r.status = 'cancelled' THEN 1 ELSE 0 END) * 100.0 / COUNT(r.ride_id), 2) AS cancellation_rate FROM public.rides r JOIN public.users u ON r.rider_id = u.user_id JOIN public.weather_data w ON u.city = w.city AND DATE_TRUNC('hour', r.requested_at) = w.recorded_at WHERE u.city ILIKE 'Ottawa' GROUP BY u.city, w.is_rainy;`
    - When comparing coverage between weather_data and rides: aggregate min/max timestamps, distinct cities, and record counts from both tables.
    - RESULT LIMITING RULES (Context-Aware):
      * If the user specifically asks for top/bottom/first N rows (e.g., 'top 5', 'first 10', 'city with highest rainfall'), add LIMIT N.
@@ -440,13 +442,26 @@ You are an SQL Data Analyst assistant for an OLA-inspired mobility platform.
 The user asked: "{curated_question}"
 Database returned: {execution_result}
 
-Your task is to present this data in a clear, well-structured, natural language response.
-- Highlight key insights directly with exact numbers from the data.
-- For geographic and temporal coverage questions:
-  * State the exact date ranges and distinct cities for weather_data and rides from the query result.
-  * Base overlap conclusions STRICTLY on the returned data: weather data is available for January 2025 across all 8 cities (Calgary, Edmonton, Halifax, Montreal, Ottawa, Toronto, Vancouver, Winnipeg). The rides dataset spans January 2025 to July 2026 across all 8 cities. Explain that meaningful ride/weather joins can be performed across all 8 cities for the January 2025 observation window.
-- STRICT NON-CAUSAL LANGUAGE: Express results in terms of **observed associations and correlations** (e.g., "The data shows an association between rainy hours and...", "During rainy periods in January 2025, average cancellation rate was X% compared to Y% in dry periods"). NEVER state that rain *causes* surge pricing or cancellations.
-- Format multi-row results neatly with markdown tables or bullet points.
+Your task is to present this data in a clear, well-structured, natural language response following strict analytical precision rules:
+
+ANALYTICAL INTERPRETATION RULES:
+1. DISTINGUISH SUBGROUP HIGHESTS FROM COMPARISONS:
+   - Distinguish "highest cancellation rate among rainy rides" from "rain is associated with a higher cancellation rate".
+   - If the query only analyzes rainy rides (e.g. across 8 cities), state:
+     "Among the eight cities, Ottawa had the highest observed cancellation rate for rainy rides in January 2025: 21.43% (3 cancellations out of 14 rainy rides)."
+   - Do NOT claim that rainy weather is associated with higher cancellations unless the query explicitly compares rainy AND non-rainy cancellation rates for the same city/scope.
+2. ALWAYS INCLUDE SAMPLE SIZES:
+   - When reporting a rate or percentage, always mention the numerator and denominator:
+     e.g., "21.43% based on 14 rainy rides and 3 cancellations."
+3. DO NOT CLAIM STATISTICAL SIGNIFICANCE:
+   - Do not call a small sample statistically significant unless a formal statistical hypothesis test (e.g., p-value) has actually been performed.
+4. STRICT NON-CAUSAL LANGUAGE:
+   - Express results purely in terms of observed numbers and correlations (e.g., "During the observed period...", "coincided with..."). NEVER state that rain *causes* cancellations, surge pricing, or higher fares.
+5. GEOGRAPHIC AND TEMPORAL COVERAGE:
+   - State the exact date ranges and distinct cities for weather_data and rides from the query result.
+   - Base overlap conclusions STRICTLY on the returned data: weather data is available for January 2025 across all 8 cities (Calgary, Edmonton, Halifax, Montreal, Ottawa, Toronto, Vancouver, Winnipeg). The rides dataset spans January 2025 to July 2026 across all 8 cities. Explain that meaningful ride/weather joins can be performed across all 8 cities for the January 2025 observation window.
+6. FORMATTING:
+   - Format multi-row results neatly with markdown tables or bullet points.
 
 Provide a concise, professional, and helpful answer:
 """
