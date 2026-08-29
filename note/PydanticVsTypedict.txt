@@ -1,0 +1,36 @@
+Pydantic → More rule-based / strict
+
+If the agent goes outside the defined rules, validation will fail and the process may stop.
+
+TypedDict → Less strict
+
+It only defines what the data should look like. If the agent breaks the rule, TypedDict itself may still allow the data to continue, taking the risk.
+
+Example:
+
+Suppose we say:
+
+amount should be an integer.
+
+Pydantic:
+
+User gives:
+
+amount = "100"
+
+→ Pydantic checks/validates it.
+→ With strict validation, it will reject the string because it expects an integer.
+
+TypedDict:
+
+User gives:
+
+amount = "100"
+
+→ TypedDict doesn't check it at runtime.
+→ The data may continue even though it doesn't match the expected type.
+
+Easy to remember:
+
+Pydantic = Rules are enforced
+TypedDict = Rules are described, not enforced

@@ -1,0 +1,7 @@
+3 messages -->
+1) AIMessage ---> AI Bot Response
+2) System Message ---> Theme for entire agent
+3) Human Message ---> User Input
+
+
+from lanchain.core.messages import HumanMessage
