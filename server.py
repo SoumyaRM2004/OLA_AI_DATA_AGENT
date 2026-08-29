@@ -96,41 +96,50 @@ async def get_schema():
     """
     Fetches schema information, table list, and row counts for all tables (including weather_data).
     """
-    db = DatabaseConnection()
-    conn = db.get_connection()
-    if not conn:
+    try:
+        db = DatabaseConnection()
+        conn = db.get_connection()
+        if not conn:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": "Database connection is not available. Please check .env credentials.",
+                    "tables": {}
+                }
+            )
+
+        tables = ["users", "vehicles", "rides", "payments", "ratings", "weather_data"]
+        schema_data = {}
+
+        for table in tables:
+            # Get columns and data types
+            col_res = db.execute_query_structured(f"""
+                SELECT column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_name = '{table}' AND table_schema = 'public'
+                ORDER BY ordinal_position;
+            """)
+            
+            # Get row count
+            count_res = db.execute_query_structured(f"SELECT COUNT(*) AS total FROM public.{table};")
+            row_count = count_res["records"][0]["total"] if count_res["records"] else 0
+
+            # Sample rows
+            sample_res = db.execute_query_structured(f"SELECT * FROM public.{table} LIMIT 3;")
+
+            schema_data[table] = {
+                "columns": col_res.get("records", []),
+                "row_count": row_count,
+                "sample_rows": sample_res.get("rows", []),
+                "sample_columns": sample_res.get("columns", [])
+            }
+
+        return JSONResponse(content={"tables": schema_data, "error": None})
+    except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"error": "Database connection is not available. Please check .env credentials."}
+            content={"error": f"Database schema query error: {str(e)}", "tables": {}}
         )
-
-    tables = ["users", "vehicles", "rides", "payments", "ratings", "weather_data"]
-    schema_data = {}
-
-    for table in tables:
-        # Get columns and data types
-        col_res = db.execute_query_structured(f"""
-            SELECT column_name, data_type, is_nullable
-            FROM information_schema.columns
-            WHERE table_name = '{table}' AND table_schema = 'public'
-            ORDER BY ordinal_position;
-        """)
-        
-        # Get row count
-        count_res = db.execute_query_structured(f"SELECT COUNT(*) AS total FROM public.{table};")
-        row_count = count_res["records"][0]["total"] if count_res["records"] else 0
-
-        # Sample rows
-        sample_res = db.execute_query_structured(f"SELECT * FROM public.{table} LIMIT 3;")
-
-        schema_data[table] = {
-            "columns": col_res["records"],
-            "row_count": row_count,
-            "sample_rows": sample_res["rows"],
-            "sample_columns": sample_res["columns"]
-        }
-
-    return JSONResponse(content={"tables": schema_data})
 
 
 @app.get("/api/tables/{table_name}")
@@ -148,9 +157,20 @@ async def get_table_content(table_name: str, limit: int = 50, offset: int = 0):
     if offset < 0:
         raise HTTPException(status_code=400, detail="Query offset parameter must be non-negative.")
 
-    db = DatabaseConnection()
-    res = db.get_table_data(table_name, limit=limit, offset=offset)
-    return JSONResponse(content=res)
+    try:
+        db = DatabaseConnection()
+        res = db.get_table_data(table_name, limit=limit, offset=offset)
+        return JSONResponse(content=res)
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "columns": [],
+                "rows": [],
+                "records": [],
+                "error": f"Database query error on table '{table_name}': {str(e)}"
+            }
+        )
 
 
 @app.post("/api/etl/extract")

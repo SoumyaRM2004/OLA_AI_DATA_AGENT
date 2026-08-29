@@ -276,9 +276,9 @@ class DatabaseConnection:
             if cursor:
                 cursor.close()
 
-    def get_table_data(self, table_name: str, limit: int = 50) -> Dict[str, Any]:
-        """Fetches table columns and rows for Database Explorer."""
-        query = f"SELECT * FROM public.{table_name} LIMIT {limit};"
+    def get_table_data(self, table_name: str, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+        """Fetches table columns and rows for Database Explorer with pagination limit and offset."""
+        query = f"SELECT * FROM public.{table_name} LIMIT {limit} OFFSET {offset};"
         return self.execute_query_structured(query)
 
     def get_database_stats(self) -> Dict[str, Any]:

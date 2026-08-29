@@ -786,7 +786,22 @@ async function loadDbSchema() {
 
     try {
         const res = await fetch('/api/schema');
+        if (!res.ok) {
+            let errorText = `Database schema request failed (HTTP ${res.status}). Check server logs.`;
+            try {
+                const errData = await res.json();
+                if (errData && errData.error) errorText = errData.error;
+            } catch (_) {}
+            listContainer.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">${escapeHtml(errorText)}</p>`;
+            return;
+        }
+
         const data = await res.json();
+        if (data.error) {
+            listContainer.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">${escapeHtml(data.error)}</p>`;
+            return;
+        }
+
         dbSchemaCache = data.tables || {};
 
         const tableNames = Object.keys(dbSchemaCache);
@@ -818,7 +833,7 @@ async function loadDbSchema() {
         }
 
     } catch (err) {
-        listContainer.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">Error: ${err.message}</p>`;
+        listContainer.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">Database schema request failed: ${escapeHtml(err.message || 'Check server logs.')}</p>`;
     }
 }
 
@@ -848,9 +863,9 @@ async function displayTableData(tableName) {
     columns.forEach(c => {
         schemaHtml += `
             <tr>
-                <td><code>${c.column_name}</code></td>
-                <td><span style="color: var(--accent-cyan);">${c.data_type}</span></td>
-                <td>${c.is_nullable}</td>
+                <td><code>${escapeHtml(c.column_name)}</code></td>
+                <td><span style="color: var(--accent-cyan);">${escapeHtml(c.data_type)}</span></td>
+                <td>${escapeHtml(c.is_nullable)}</td>
             </tr>
         `;
     });
@@ -861,7 +876,22 @@ async function displayTableData(tableName) {
     dataWrapper.innerHTML = '<p class="loading-text">Loading rows...</p>';
     try {
         const res = await fetch(`/api/tables/${tableName}?limit=50`);
+        if (!res.ok) {
+            let errorText = `Failed to fetch live rows for ${tableName} (HTTP ${res.status}). Check server logs.`;
+            try {
+                const errData = await res.json();
+                if (errData && errData.error) errorText = errData.error;
+            } catch (_) {}
+            dataWrapper.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">${escapeHtml(errorText)}</p>`;
+            return;
+        }
+
         const tableData = await res.json();
+
+        if (tableData.error) {
+            dataWrapper.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">${escapeHtml(tableData.error)}</p>`;
+            return;
+        }
 
         if (tableData.rows && tableData.rows.length > 0) {
             let dataHtml = `
@@ -874,7 +904,7 @@ async function displayTableData(tableName) {
                     <tbody>
                         ${tableData.rows.map(row => `
                             <tr>
-                                ${row.map(cell => `<td>${escapeHtml(String(cell))}</td>`).join('')}
+                                ${row.map(cell => `<td>${escapeHtml(String(cell !== null && cell !== undefined ? cell : ''))}</td>`).join('')}
                             </tr>
                         `).join('')}
                     </tbody>
@@ -885,7 +915,7 @@ async function displayTableData(tableName) {
             dataWrapper.innerHTML = '<p class="placeholder-text">Table is empty.</p>';
         }
     } catch (err) {
-        dataWrapper.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">Error: ${err.message}</p>`;
+        dataWrapper.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">Failed to fetch live rows for ${tableName}: ${escapeHtml(err.message || 'Check server logs.')}</p>`;
     }
 }
 
