@@ -1153,6 +1153,19 @@ function initDataImport() {
 
     if (!uploadForm) return;
 
+    function updateValidateButtonState() {
+        const hasDatasetType = targetSelect && targetSelect.value.trim() !== '';
+        const hasFile = fileInput && fileInput.files && fileInput.files.length > 0;
+        if (btnValidate) {
+            btnValidate.disabled = !(hasDatasetType && hasFile);
+        }
+    }
+
+    // Dataset type change listener
+    if (targetSelect) {
+        targetSelect.addEventListener('change', updateValidateButtonState);
+    }
+
     // Drag and drop handlers
     ['dragenter', 'dragover'].forEach(eventName => {
         dropArea.addEventListener(eventName, (e) => {
@@ -1175,6 +1188,7 @@ function initDataImport() {
             fileInput.files = files;
             updateSelectedFileUI(files[0]);
         }
+        updateValidateButtonState();
     });
 
     dropArea.addEventListener('click', () => {
@@ -1184,13 +1198,22 @@ function initDataImport() {
     fileInput.addEventListener('change', () => {
         if (fileInput.files.length > 0) {
             updateSelectedFileUI(fileInput.files[0]);
+        } else {
+            updateValidateButtonState();
         }
     });
 
     function updateSelectedFileUI(file) {
         selectedBadge.style.display = 'inline-flex';
-        selectedBadge.innerHTML = `<i data-lucide="file-check"></i> ${escapeHtml(file.name)} (${(file.size / 1024).toFixed(1)} KB)`;
+        selectedBadge.innerHTML = `<span style="color: var(--primary-emerald); font-weight: 700; margin-right: 6px;">✓</span> <strong>${escapeHtml(file.name)}</strong> <span style="color: var(--text-dim); margin-left: 6px;">(${(file.size / 1024).toFixed(1)} KB)</span>`;
         if (window.lucide) lucide.createIcons();
+        updateValidateButtonState();
+    }
+
+    // Initial state check
+    updateValidateButtonState();
+    if (btnLoadDb) {
+        btnLoadDb.disabled = Object.keys(stagedDatasetsState).length === 0;
     }
 
     // Form Submission: Validate CSV
@@ -1241,8 +1264,8 @@ function initDataImport() {
         } catch (err) {
             validationOutput.innerHTML = `<div class="import-error-list"><strong>Network/Server Error:</strong> ${escapeHtml(err.message)}</div>`;
         } finally {
-            btnValidate.disabled = false;
             btnValidate.innerHTML = '<i data-lucide="check-circle"></i> Validate CSV Dataset';
+            updateValidateButtonState();
             if (window.lucide) lucide.createIcons();
         }
     });
