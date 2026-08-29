@@ -323,24 +323,43 @@ function renderDynamicChart(canvasId, chartConfig) {
     const ctx = document.getElementById(canvasId);
     if (!ctx) return;
 
+    if (activeChartInstances[canvasId]) {
+        activeChartInstances[canvasId].destroy();
+    }
+
     const colors = [
         'rgba(16, 185, 129, 0.85)',
         'rgba(6, 182, 212, 0.85)',
         'rgba(139, 92, 246, 0.85)',
         'rgba(245, 158, 11, 0.85)',
         'rgba(239, 68, 68, 0.85)',
-        'rgba(59, 130, 246, 0.85)'
+        'rgba(59, 130, 246, 0.85)',
+        'rgba(236, 72, 153, 0.85)',
+        'rgba(168, 85, 247, 0.85)'
     ];
 
     const isDoughnut = chartConfig.type === 'doughnut';
 
-    new Chart(ctx, {
-        type: chartConfig.type,
+    // Format labels defensively on frontend
+    const formattedLabels = (chartConfig.labels || []).map(lbl => {
+        const s = String(lbl);
+        if (s.toLowerCase() === 'true' || s.toLowerCase() === 'false') {
+            const isT = s.toLowerCase() === 'true';
+            const col = (chartConfig.label_column || '').toLowerCase();
+            if (col.includes('rain') || col.includes('weather')) return isT ? 'Rainy' : 'Non-Rainy';
+            if (col.includes('active')) return isT ? 'Active' : 'Inactive';
+            return isT ? 'Yes' : 'No';
+        }
+        return s;
+    });
+
+    activeChartInstances[canvasId] = new Chart(ctx, {
+        type: chartConfig.type || 'bar',
         data: {
-            labels: chartConfig.labels,
+            labels: formattedLabels,
             datasets: [{
-                label: chartConfig.title || 'Value',
-                data: chartConfig.values,
+                label: chartConfig.title || 'Metric',
+                data: chartConfig.values || [],
                 backgroundColor: isDoughnut ? colors : 'rgba(16, 185, 129, 0.65)',
                 borderColor: isDoughnut ? 'rgba(0,0,0,0.5)' : '#10B981',
                 borderWidth: 1.5,
@@ -360,6 +379,14 @@ function renderDynamicChart(canvasId, chartConfig) {
                     text: chartConfig.title,
                     color: '#F9FAFB',
                     font: { family: 'Outfit', size: 13, weight: '600' }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const val = context.parsed.y !== undefined ? context.parsed.y : context.parsed;
+                            return ` ${context.label}: ${Number(val).toLocaleString()}`;
+                        }
+                    }
                 }
             },
             scales: isDoughnut ? {} : {
@@ -369,7 +396,8 @@ function renderDynamicChart(canvasId, chartConfig) {
                 },
                 y: {
                     ticks: { color: '#9CA3AF', font: { family: 'Inter', size: 11 } },
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' }
+                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                    beginAtZero: true
                 }
             }
         }

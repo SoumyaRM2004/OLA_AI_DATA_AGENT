@@ -139,48 +139,153 @@ data_agent = data_agent_graph.compile()
 
 def auto_detect_chart(columns: List[str], records: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Analyzes the query result structure and suggests chart configurations (bar, line, doughnut)
-    for seamless visualization in the frontend.
+    Analyzes query result columns and records to automatically detect categorical (X-axis)
+    and numeric metric (Y-axis) columns, formatting boolean labels and generating human-readable titles.
     """
     if not records or len(records) < 1 or len(columns) < 2:
         return {"can_chart": False}
 
-    # Find string/categorical and numeric columns
-    cat_col = None
-    num_col = None
+    def is_bool_val(v: Any) -> bool:
+        return isinstance(v, bool) or str(v).lower() in ("true", "false")
+
+    def is_numeric_val(v: Any) -> bool:
+        if isinstance(v, bool):
+            return False
+        if isinstance(v, (int, float)):
+            return True
+        try:
+            float(v)
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    def is_temporal_val(col: str, v: Any) -> bool:
+        col_l = col.lower()
+        if any(k in col_l for k in ["date", "time", "day", "month", "year", "recorded_at", "requested_at"]):
+            return True
+        v_str = str(v)
+        return len(v_str) >= 10 and (v_str[4] == "-" or v_str[2] == "/")
+
+    num_candidates = []
+    cat_candidates = []
 
     for col in columns:
-        first_val = records[0].get(col)
-        if isinstance(first_val, (int, float)) and num_col is None:
-            num_col = col
-        elif isinstance(first_val, str) and cat_col is None:
-            cat_col = col
+        vals = [r.get(col) for r in records if r.get(col) is not None]
+        if not vals:
+            continue
 
-    # If first pass didn't find them, try second col
-    if cat_col is None and len(columns) > 0:
-        cat_col = columns[0]
-    if num_col is None and len(columns) > 1:
-        num_col = columns[1]
+        # 1. Boolean check (categorical)
+        if all(is_bool_val(v) for v in vals):
+            cat_candidates.append((col, "boolean", 12))
+        elif any(is_bool_val(v) for v in vals):
+            cat_candidates.append((col, "boolean", 10))
+        # 2. Temporal check (categorical / line axis)
+        elif any(is_temporal_val(col, v) for v in vals):
+            cat_candidates.append((col, "temporal", 11))
+        # 3. Numeric check (metric axis)
+        elif all(is_numeric_val(v) for v in vals):
+            score = 10
+            col_l = col.lower()
+            if any(k in col_l for k in ["count", "avg", "sum", "total", "fare", "rate", "revenue", "amount", "temp", "precip", "rain", "percent", "pct"]):
+                score += 5
+            num_candidates.append((col, score))
+        # 4. Standard categorical (string)
+        else:
+            cat_candidates.append((col, "categorical", 5))
 
-    if not cat_col or not num_col:
+    # Pick best numeric and categorical columns
+    num_candidates.sort(key=lambda x: x[1], reverse=True)
+    cat_candidates.sort(key=lambda x: x[2], reverse=True)
+
+    num_col = None
+    cat_col = None
+
+    if num_candidates:
+        num_col = num_candidates[0][0]
+
+    if cat_candidates:
+        for c in cat_candidates:
+            if c[0] != num_col:
+                cat_col = c[0]
+                break
+
+    # Fallbacks if one is missing
+    if cat_col is None and num_col is not None:
+        for c in columns:
+            if c != num_col:
+                cat_col = c
+                break
+    elif num_col is None and cat_col is not None:
+        for c in columns:
+            if c != cat_col and is_numeric_val(records[0].get(c)):
+                num_col = c
+                break
+
+    if not cat_col or not num_col or cat_col == num_col:
         return {"can_chart": False}
 
-    # Prepare labels and values
-    labels = [str(r.get(cat_col, "")) for r in records]
+    def format_display_label(col_name: str, raw_val: Any) -> str:
+        if is_bool_val(raw_val):
+            is_true = raw_val is True or str(raw_val).lower() == "true"
+            col_l = col_name.lower()
+            if "rain" in col_l or "weather" in col_l:
+                return "Rainy" if is_true else "Non-Rainy"
+            elif "active" in col_l:
+                return "Active" if is_true else "Inactive"
+            elif "completed" in col_l:
+                return "Completed" if is_true else "Incomplete"
+            elif "cancel" in col_l:
+                return "Cancelled" if is_true else "Not Cancelled"
+            elif "success" in col_l:
+                return "Successful" if is_true else "Failed"
+            else:
+                return "Yes" if is_true else "No"
+        return str(raw_val)
+
+    def clean_column_name(col_name: str) -> str:
+        col_l = col_name.lower()
+        if col_l == "is_rainy":
+            return "Weather Condition"
+        elif col_l.startswith("is_"):
+            return col_name[3:].replace("_", " ").title() + " Status"
+        name_map = {
+            "avg_rainfall_mm": "Average Rainfall (mm)",
+            "avg_rainfall": "Average Rainfall (mm)",
+            "total_precip_mm": "Total Precipitation (mm)",
+            "ride_count": "Ride Count",
+            "total_rides": "Total Rides",
+            "avg_fare": "Average Fare",
+            "avg_rating": "Average Rating",
+            "total_revenue": "Total Revenue",
+            "cancellation_rate": "Cancellation Rate (%)",
+            "percent_canceled_rainy": "Rainy Cancellation %",
+            "percent_canceled_non_rainy": "Non-Rainy Cancellation %",
+            "surge_multiplier": "Surge Multiplier",
+            "avg_surge": "Average Surge Multiplier",
+            "transaction_count": "Transaction Count",
+            "user_count": "User Count"
+        }
+        return name_map.get(col_l, col_name.replace("_", " ").title())
+
+    labels = [format_display_label(cat_col, r.get(cat_col)) for r in records]
     values = []
     for r in records:
         try:
-            values.append(float(r.get(num_col, 0)))
+            v = r.get(num_col)
+            values.append(float(v) if v is not None else 0.0)
         except (ValueError, TypeError):
-            values.append(0)
+            values.append(0.0)
 
-    # Determine best chart type
-    if len(records) <= 6 and ("status" in cat_col.lower() or "method" in cat_col.lower() or "type" in cat_col.lower()):
-        chart_type = "doughnut"
-    elif any(k in cat_col.lower() for k in ["date", "time", "day", "month", "year"]):
+    # Determine chart type
+    is_temporal = any(k in cat_col.lower() for k in ["date", "time", "day", "month", "year", "recorded_at", "requested_at"])
+    if is_temporal:
         chart_type = "line"
+    elif len(records) <= 6 and any(k in cat_col.lower() for k in ["status", "payment_method", "method", "user_type", "type"]):
+        chart_type = "doughnut"
     else:
         chart_type = "bar"
+
+    title = f"{clean_column_name(num_col)} by {clean_column_name(cat_col)}"
 
     return {
         "can_chart": True,
@@ -189,7 +294,7 @@ def auto_detect_chart(columns: List[str], records: List[Dict[str, Any]]) -> Dict
         "value_column": num_col,
         "labels": labels,
         "values": values,
-        "title": f"{num_col.replace('_', ' ').title()} by {cat_col.replace('_', ' ').title()}"
+        "title": title
     }
 
 
