@@ -1,9 +1,14 @@
 import os
 import io
 import sys
+import ast
+import ipaddress
+import urllib.parse
+from pathlib import Path
+from typing import Dict, Any, Optional, List, Tuple
 import requests
 import pandas as pd
-from typing import Dict, Any, Optional, List
+import numpy as np
 from utils.database import DatabaseConnection
 
 # ============================================================
@@ -22,16 +27,159 @@ CITY_COORDINATES: Dict[str, Dict[str, Any]] = {
     "Winnipeg": {"latitude": 49.8951, "longitude": -97.1384, "province": "MB"},
 }
 
+# ============================================================
+# AST SECURITY VALIDATOR FOR PYTHON TRANSFORMATION SCRIPTS
+# Rejects dangerous calls, imports, dunders, and OS-level operations
+# ============================================================
+
+DANGEROUS_CALLS = {
+    "open", "eval", "exec", "__import__", "compile", "globals", "locals",
+    "getattr", "setattr", "delattr", "hasattr", "breakpoint", "exit", "quit",
+    "input", "help", "system", "popen", "spawn", "fork", "kill", "remove",
+    "unlink", "rmdir", "makedirs", "rename", "replace", "chmod", "chown"
+}
+
+DANGEROUS_NAMES = {
+    "os", "sys", "subprocess", "shutil", "socket", "requests", "urllib",
+    "pathlib", "pty", "posix", "builtins", "__builtins__", "pickle", "ctypes",
+    "importlib", "gc", "inspect"
+}
+
+DANGEROUS_ATTRS = {
+    "__subclasses__", "__bases__", "__mro__", "__globals__", "__builtins__",
+    "__code__", "__class__", "__dict__", "__module__", "__qualname__",
+    "to_sql", "to_pickle", "read_pickle", "to_clipboard", "read_clipboard"
+}
+
+SAFE_BUILTINS: Dict[str, Any] = {
+    "len": len,
+    "range": range,
+    "list": list,
+    "dict": dict,
+    "set": set,
+    "tuple": tuple,
+    "str": str,
+    "int": int,
+    "float": float,
+    "bool": bool,
+    "round": round,
+    "min": min,
+    "max": max,
+    "sum": sum,
+    "abs": abs,
+    "print": print,
+    "isinstance": isinstance,
+    "enumerate": enumerate,
+    "zip": zip,
+    "sorted": sorted,
+    "reversed": reversed,
+    "any": any,
+    "all": all,
+    "None": None,
+    "True": True,
+    "False": False,
+}
+
+
+def validate_python_ast(code: str) -> Tuple[bool, str]:
+    """
+    Parses Python code into an Abstract Syntax Tree (AST) and strictly validates
+    that no dangerous operations (imports, system commands, file deletion, dunder probing)
+    are present.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return False, f"Python Syntax Error in generated code: {e}"
+
+    for node in ast.walk(tree):
+        # 1. Reject import statements
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return False, "Import statements are disallowed in transformation scripts."
+
+        # 2. Reject dangerous function / method calls
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in DANGEROUS_CALLS:
+                return False, f"Disallowed function call detected: '{node.func.id}()'"
+            elif isinstance(node.func, ast.Attribute) and node.func.attr in DANGEROUS_CALLS:
+                return False, f"Disallowed method call detected: '{node.func.attr}()'"
+
+        # 3. Reject references to dangerous modules or built-in namespaces
+        if isinstance(node, ast.Name) and node.id in DANGEROUS_NAMES:
+            return False, f"Disallowed module/identifier access: '{node.id}'"
+
+        # 4. Reject access to dangerous internal attributes (dunder traversal)
+        if isinstance(node, ast.Attribute) and node.attr in DANGEROUS_ATTRS:
+            return False, f"Disallowed attribute access: '{node.attr}'"
+
+    return True, ""
+
+
+# ============================================================
+# ETL TOOLS CLASS
+# ============================================================
 
 class ETLTools:
     def __init__(self):
-        self.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        self.project_root = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))).resolve()
+        self.data_dir = (self.project_root / "data").resolve()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
-    def _resolve_path(self, folder_or_file: str) -> str:
-        """Resolves path relative to project root if not absolute."""
-        if os.path.isabs(folder_or_file):
-            return folder_or_file
-        return os.path.join(self.project_root, folder_or_file)
+    def _resolve_safe_data_path(self, folder_or_file: str, allow_root_data: bool = True) -> Path:
+        """
+        Safely resolves a path and guarantees it resides strictly inside the project's data/ directory.
+        Prevents directory traversal attacks (e.g. ../../etc/passwd).
+        """
+        target = Path(folder_or_file)
+        if target.is_absolute():
+            resolved = target.resolve()
+        else:
+            resolved = (self.project_root / target).resolve()
+
+        # Verify that resolved path is inside data_dir
+        try:
+            resolved.relative_to(self.data_dir)
+        except ValueError:
+            raise PermissionError(
+                f"Security Violation: Path '{folder_or_file}' resolves outside the permitted data directory ('{self.data_dir}')."
+            )
+
+        return resolved
+
+    def _validate_safe_url(self, url: str) -> Tuple[bool, str]:
+        """
+        Validates external API URL against Server-Side Request Forgery (SSRF).
+        Rejects internal addresses, private IPs, localhost, and non-HTTP protocols.
+        """
+        try:
+            parsed = urllib.parse.urlparse(url)
+        except Exception as e:
+            return False, f"Invalid URL structure: {e}"
+
+        if parsed.scheme not in ("http", "https"):
+            return False, f"Unsupported URL scheme '{parsed.scheme}'. Only HTTP and HTTPS are permitted."
+
+        hostname = (parsed.hostname or "").lower().strip()
+        if not hostname:
+            return False, "URL must include a valid hostname."
+
+        # Block localhost and loopbacks
+        if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"):
+            return False, "Access to localhost/loopback addresses is prohibited."
+
+        if hostname.endswith((".local", ".internal", ".localhost", ".lan")):
+            return False, "Access to internal domain zones is prohibited."
+
+        # Check for private IP addresses
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+                return False, f"Access to private/internal IP address '{hostname}' is prohibited."
+        except ValueError:
+            # Hostname is a domain name, which is allowed
+            pass
+
+        return True, ""
 
     def extract_multi_city_weather(
         self,
@@ -42,19 +190,13 @@ class ETLTools:
     ) -> str:
         """
         Extracts hourly historical weather data for all 8 ride-hailing cities from Open-Meteo Archive API
-        and consolidates them into a single dataset.
-        
-        Args:
-            start_date: Start date in YYYY-MM-DD format (default: 2025-01-01).
-            end_date: End date in YYYY-MM-DD format (default: 2025-01-31).
-            output_folder: Directory to save the extracted dataset.
-            format: 'csv', 'json', or 'parquet'.
-            
-        Returns:
-            str: Summary of extraction status and statistics.
+        and consolidates them into a single dataset within data/extract.
         """
-        resolved_folder = self._resolve_path(output_folder)
-        os.makedirs(resolved_folder, exist_ok=True)
+        try:
+            resolved_folder = self._resolve_safe_data_path(output_folder)
+            resolved_folder.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return f"Filesystem Security Error: {e}"
 
         headers = {"User-Agent": "OLA-AI-DataAgent/1.0"}
         dfs = []
@@ -69,6 +211,11 @@ class ETLTools:
                     f"latitude={lat}&longitude={lon}&start_date={start_date}&end_date={end_date}&"
                     f"hourly=temperature_2m,precipitation,rain,weather_code"
                 )
+
+                # Validate URL before making request
+                is_safe, url_err = self._validate_safe_url(url)
+                if not is_safe:
+                    return f"URL Security Error: {url_err}"
 
                 resp = requests.get(url, headers=headers, timeout=20)
                 resp.raise_for_status()
@@ -100,7 +247,6 @@ class ETLTools:
 
             final_df = pd.concat(dfs, ignore_index=True)
 
-            # Standard column ordering
             cols = [
                 "recorded_at", "city", "latitude", "longitude",
                 "temperature_c", "precipitation_mm", "rain_mm",
@@ -108,8 +254,8 @@ class ETLTools:
             ]
             final_df = final_df[cols]
 
-            fmt = format.lower()
-            filename = os.path.join(resolved_folder, f"weather_data.{fmt}")
+            fmt = format.lower().strip()
+            filename = resolved_folder / f"weather_data.{fmt}"
 
             if fmt == "csv":
                 final_df.to_csv(filename, index=False)
@@ -118,7 +264,7 @@ class ETLTools:
             elif fmt == "parquet":
                 final_df.to_parquet(filename, index=False)
             else:
-                return f"Error: Unsupported format '{format}'"
+                return f"Error: Unsupported format '{format}' (permitted: csv, json, parquet)"
 
             return (
                 f"Successfully extracted weather data for all 8 ride-hailing cities ({len(final_df)} total records).\n"
@@ -140,10 +286,18 @@ class ETLTools:
         city_name: Optional[str] = None
     ) -> str:
         """
-        Extracts data from an arbitrary API endpoint or single weather URL.
+        Extracts data from a validated external API endpoint into the local data directory.
         """
-        resolved_folder = self._resolve_path(output_folder)
-        os.makedirs(resolved_folder, exist_ok=True)
+        # Validate SSRF safety
+        is_safe, err_msg = self._validate_safe_url(url)
+        if not is_safe:
+            return f"Security Validation Error: {err_msg}"
+
+        try:
+            resolved_folder = self._resolve_safe_data_path(output_folder)
+            resolved_folder.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return f"Filesystem Security Error: {e}"
 
         # If user requests all cities or weather without specific coords, run multi-city extraction
         if "all" in url.lower() or "8" in url.lower():
@@ -186,7 +340,6 @@ class ETLTools:
                 df["is_rainy"] = (df.get("rain_mm", 0) > 0.0) | (df.get("precipitation_mm", 0) > 0.0)
                 base_filename = "weather_data"
 
-            # Generic API normalization for other datasets
             elif isinstance(data, list):
                 df = pd.json_normalize(data)
                 base_filename = "extracted_data"
@@ -203,8 +356,8 @@ class ETLTools:
             else:
                 return f"Error: Unsupported JSON response structure: {type(data)}"
 
-            fmt = format.lower()
-            filename = os.path.join(resolved_folder, f"{base_filename}.{fmt}")
+            fmt = format.lower().strip()
+            filename = resolved_folder / f"{base_filename}.{fmt}"
 
             if fmt == "csv":
                 df.to_csv(filename, index=False)
@@ -230,13 +383,17 @@ class ETLTools:
 
     def transform_load_context(self, file_path: str) -> str:
         """
-        Reads sample rows from a local dataset to provide context for Pandas code generation.
+        Reads sample rows from a local dataset within data/ to provide context for Pandas code generation.
         """
-        resolved_path = self._resolve_path(file_path)
-        if not os.path.exists(resolved_path):
+        try:
+            resolved_path = self._resolve_safe_data_path(file_path)
+        except Exception as e:
+            return f"Security Error: {e}"
+
+        if not resolved_path.exists():
             return f"Error: File not found at {resolved_path}"
 
-        file_extension = os.path.splitext(resolved_path)[1].lower()
+        file_extension = resolved_path.suffix.lower()
         try:
             if file_extension == ".csv":
                 df = pd.read_csv(resolved_path)
@@ -260,15 +417,39 @@ class ETLTools:
 
     def execute_code(self, code: str) -> str:
         """
-        Executes Python/Pandas transformation script safely while capturing standard output.
+        Executes Python/Pandas transformation script in a restricted sandbox environment
+        after validating the code AST for dangerous operations.
         """
+        # 1. Clean markdown code fences if present
+        cleaned_code = code.strip()
+        if cleaned_code.startswith("```python"):
+            cleaned_code = cleaned_code[9:]
+        elif cleaned_code.startswith("```"):
+            cleaned_code = cleaned_code[3:]
+        if cleaned_code.endswith("```"):
+            cleaned_code = cleaned_code[:-3]
+        cleaned_code = cleaned_code.strip()
+
+        # 2. Strict AST Security Validation
+        is_valid, err_msg = validate_python_ast(cleaned_code)
+        if not is_valid:
+            return f"Security Validation Error: {err_msg}"
+
+        # 3. Restricted Execution Environment
         captured_stdout = io.StringIO()
         old_stdout = sys.stdout
-        local_vars = {"pd": pd, "os": os}
+
+        # Restricted execution scope (no os, sys, subprocess, open, or unrestricted builtins)
+        restricted_globals = {
+            "__builtins__": SAFE_BUILTINS,
+            "pd": pd,
+            "np": np,
+        }
+        restricted_locals: Dict[str, Any] = {}
 
         try:
             sys.stdout = captured_stdout
-            exec(code, globals(), local_vars)
+            exec(cleaned_code, restricted_globals, restricted_locals)
             output = captured_stdout.getvalue()
             return f"Code executed successfully.\nOutput:\n{output}" if output else "Code executed successfully."
         except Exception as e:
@@ -278,14 +459,18 @@ class ETLTools:
 
     def load_to_database(self, file_path: str = "data/extract/weather_data.csv", table_name: str = "weather_data") -> str:
         """
-        Loads an extracted/transformed CSV dataset directly into PostgreSQL with duplicate prevention.
+        Loads a CSV/JSON/Parquet dataset from data/ into PostgreSQL with duplicate prevention.
         """
-        resolved_path = self._resolve_path(file_path)
-        if not os.path.exists(resolved_path):
+        try:
+            resolved_path = self._resolve_safe_data_path(file_path)
+        except Exception as e:
+            return f"Security Error: {e}"
+
+        if not resolved_path.exists():
             return f"Error: File {file_path} not found."
 
         try:
-            ext = os.path.splitext(resolved_path)[1].lower()
+            ext = resolved_path.suffix.lower()
             if ext == ".csv":
                 df = pd.read_csv(resolved_path)
             elif ext == ".json":
@@ -306,34 +491,45 @@ class ETLTools:
             return f"Error loading to database: {e}"
 
     def list_files(self, folder: str = "data") -> list:
-        """Lists files in extract or transform folders with sizes and paths for UI."""
-        resolved_folder = self._resolve_path(folder)
-        if not os.path.exists(resolved_folder):
+        """Lists files strictly within the data/ directory for the UI."""
+        try:
+            resolved_folder = self._resolve_safe_data_path(folder)
+        except Exception:
+            return []
+
+        if not resolved_folder.exists():
             return []
 
         results = []
         for root, _, files in os.walk(resolved_folder):
             for file in files:
                 if file.endswith((".csv", ".json", ".parquet")):
-                    path = os.path.join(root, file)
-                    rel_path = os.path.relpath(path, self.project_root)
-                    size_kb = round(os.path.getsize(path) / 1024, 2)
-                    results.append({
-                        "filename": file,
-                        "relative_path": rel_path,
-                        "full_path": path,
-                        "size_kb": size_kb
-                    })
+                    path = Path(root) / file
+                    try:
+                        rel_path = path.relative_to(self.project_root)
+                        size_kb = round(path.stat().st_size / 1024, 2)
+                        results.append({
+                            "filename": file,
+                            "relative_path": str(rel_path).replace("\\", "/"),
+                            "full_path": str(path).replace("\\", "/"),
+                            "size_kb": size_kb
+                        })
+                    except Exception:
+                        continue
         return results
 
     def preview_file(self, file_path: str, max_rows: int = 10) -> Dict[str, Any]:
-        """Returns structured rows and columns from a dataset for UI preview."""
-        resolved = self._resolve_path(file_path)
-        if not os.path.exists(resolved):
+        """Returns structured rows and columns from a dataset strictly inside data/."""
+        try:
+            resolved = self._resolve_safe_data_path(file_path)
+        except Exception as e:
+            return {"error": f"Security Error: {e}", "columns": [], "rows": []}
+
+        if not resolved.exists():
             return {"error": f"File {file_path} not found", "columns": [], "rows": []}
 
         try:
-            ext = os.path.splitext(resolved)[1].lower()
+            ext = resolved.suffix.lower()
             if ext == ".csv":
                 df = pd.read_csv(resolved)
             elif ext == ".json":

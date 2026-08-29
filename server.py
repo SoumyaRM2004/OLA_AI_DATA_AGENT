@@ -23,12 +23,15 @@ app = FastAPI(
     version="1.1.0"
 )
 
-# CORS middleware for development flexibility
+# CORS middleware configured for safe local development
+allowed_origins_env = os.getenv("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
+allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -125,16 +128,22 @@ async def get_schema():
 
 
 @app.get("/api/tables/{table_name}")
-async def get_table_content(table_name: str, limit: int = 50):
+async def get_table_content(table_name: str, limit: int = 50, offset: int = 0):
     """
     Returns live table data with pagination limit for the Database Explorer.
     """
     valid_tables = ["users", "vehicles", "rides", "payments", "ratings", "weather_data"]
     if table_name not in valid_tables:
-        raise HTTPException(status_code=400, detail=f"Invalid table name. Choose from {valid_tables}")
+        raise HTTPException(status_code=400, detail=f"Invalid table name '{table_name}'. Choose from {valid_tables}")
+
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="Query limit parameter must be between 1 and 500.")
+
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="Query offset parameter must be non-negative.")
 
     db = DatabaseConnection()
-    res = db.get_table_data(table_name, limit=limit)
+    res = db.get_table_data(table_name, limit=limit, offset=offset)
     return JSONResponse(content=res)
 
 
@@ -160,13 +169,17 @@ async def trigger_extract(request: ExtractRequest):
             city_name=request.city_name
         )
     
-    # Check if file was created
-    expected_path = os.path.join(etl._resolve_path(request.output_folder), f"weather_data.{request.output_format.lower()}")
-    if not os.path.exists(expected_path):
-        expected_path = os.path.join(etl._resolve_path(request.output_folder), f"extracted_data.{request.output_format.lower()}")
+    # Check if file was created safely
+    try:
+        folder_path = etl._resolve_safe_data_path(request.output_folder)
+        expected_path = str(folder_path / f"weather_data.{request.output_format.lower()}")
+        if not os.path.exists(expected_path):
+            expected_path = str(folder_path / f"extracted_data.{request.output_format.lower()}")
+    except Exception:
+        expected_path = ""
 
     preview = {}
-    if os.path.exists(expected_path):
+    if expected_path and os.path.exists(expected_path):
         preview = etl.preview_file(expected_path, max_rows=5)
 
     return JSONResponse(content={"message": msg, "preview": preview, "file_path": expected_path})

@@ -78,20 +78,24 @@ def transform_load_tool(
         output_format: 'csv', 'json', or 'parquet'.
         user_question: Specific filtering, cleaning, or aggregation requirement.
     """
-    etl_tools = ETLTools()
-    top_3_rows = etl_tools.transform_load_context(input_file_path)
-    llm = pick_llm("low")
+    # Ensure output folder exists before running transformation
+    try:
+        etl_tools._resolve_safe_data_path(output_folder).mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return f"Filesystem Security Error: {e}"
 
     prompt = f"""
-You are an expert Python Data Analyst who uses Pandas to transform datasets.
-Write ONLY executable Python code (using pandas as pd and os) that performs the requested ETL transformation.
+You are an expert Python Data Analyst who writes pure Pandas transformation scripts.
+Write ONLY executable Python Pandas code to transform the dataset.
 
-RULES:
-1. Load dataset from: '{input_file_path}'
-2. Perform transformation: '{user_question}'
-3. Save result to directory: '{output_folder}' with format '{output_format}' (e.g., 'weather_transformed.{output_format}')
-4. Ensure os.makedirs('{output_folder}', exist_ok=True) is called.
-5. Return ONLY python code without markdown fences, explanation, or comments.
+ENVIRONMENT & RULES:
+1. 'pd' (pandas) and 'np' (numpy) are pre-loaded in the execution sandbox. Do NOT write import statements.
+2. Do NOT use 'os', 'sys', 'open()', or any system/file deletion calls.
+3. Read the dataset from '{input_file_path}' using pd.read_csv(), pd.read_json(), or pd.read_parquet().
+4. Perform the requested analytical transformation: '{user_question}'
+5. Save the resulting DataFrame to '{output_folder}/transformed_data.{output_format}' (e.g. df.to_csv('{output_folder}/transformed_data.{output_format}', index=False)).
+6. Print a concise summary of the transformed data shape or aggregated metrics using print().
+7. Return ONLY pure Python code without markdown fences, explanation, or conversational text.
 
 Dataset Context:
 {top_3_rows}
@@ -104,7 +108,7 @@ Dataset Context:
     pandas_code = re.sub(r"^```(?:python)?\s*", "", pandas_code, flags=re.IGNORECASE)
     pandas_code = re.sub(r"\s*```$", "", pandas_code).strip()
 
-    # Execute the code
+    # Execute the code in restricted sandbox
     results = etl_tools.execute_code(pandas_code)
 
     return f"Transformation complete.\n\nGenerated Code:\n```python\n{pandas_code}\n```\n\nExecution Log:\n{results}"

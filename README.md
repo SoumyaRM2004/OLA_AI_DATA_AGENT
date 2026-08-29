@@ -144,8 +144,9 @@ Generated SQL
 └──────────────────┬───────────────────┘
                    ▼
 ┌──────────────────────────────────────┐
-│ Read-Only PostgreSQL Execution       │
+│ Read-Only Application Execution      │
 │ Parameterized & JSON serialized      │
+│ (Production: use read-only DB role)  │
 └──────────────────────────────────────┘
 ```
 
@@ -219,8 +220,8 @@ OLA_AI_DATA_AGENT/
 │   ├── sql_analyst.py         # SQL Analyst, prompt context & Security Judge
 │   └── etl_analyst.py         # ETL Analyst & tool bindings
 ├── utils/
-│   ├── database.py            # PostgreSQL connection pool & stats aggregator
-│   ├── etl_tools.py           # 8-city Open-Meteo extraction & Pandas tools
+│   ├── database.py            # PostgreSQL connection manager & dashboard statistics
+│   ├── etl_tools.py           # 8-city Open-Meteo extraction & secure Pandas tools
 │   └── llm_pick.py            # Model factory & unified get_message_text helper
 ├── model/
 │   └── schema.py              # Pydantic schemas for structured routing & SQL
