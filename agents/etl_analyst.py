@@ -1,9 +1,7 @@
 import os
 import sys
-import json
 import re
 import logging
-
 
 logging.getLogger("google.genai").setLevel(logging.ERROR)
 logging.getLogger("google_genai").setLevel(logging.ERROR)
@@ -14,154 +12,109 @@ sys.path.append(
     )
 )
 
-
 from utils.llm_pick import pick_llm
 from utils.etl_tools import ETLTools
 from model.schema import EtlAgentSchema
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
 from langchain.tools import tool
-from langchain_google_genai import ChatGoogleGenerativeAI
 
 
-#----------------------------------AGENT TOOLS----------------------------------------------------------
+# ----------------------------------AGENT TOOLS----------------------------------------------------------
 
 @tool
-def extract_load_tool(url:str,output_folder:str,output_format:str) ->str:
-  """
-    This tool extract the data from the API and loads it into the desired location
+def extract_load_tool(url: str, output_folder: str = "data/extract", output_format: str = "csv") -> str:
+    """
+    Extracts data from the given API endpoint and loads it into the desired folder in CSV, JSON, or Parquet format.
     
     Args:
-      url: The URL of the API from which the data is to be extracted.
-      output_folder: The folder path where the extracted data is to be loaded.
-      format: The format in which the extracted data is to be loaded.
-      
-    Returns:
-      str: A message indicating the success or failure of the operation
-  """
-  etl_tools=ETLTools()
-  result=etl_tools.extract_load(url,output_folder,output_format)
-  return result 
+        url: The API URL endpoint.
+        output_folder: The directory to save the file into (e.g. data/extract).
+        output_format: 'csv', 'json', or 'parquet'.
+    """
+    etl_tools = ETLTools()
+    result = etl_tools.extract_load(url, output_folder, output_format)
+    return result
 
 
 @tool
-def transform_load_tool(input_file_path:str,output_folder:str,output_format:str,user_question:str) -> str:
-  """
-    This tool transform the data and loads it into the desired location
+def transform_load_tool(input_file_path: str, output_folder: str = "data/transform", output_format: str = "csv", user_question: str = "") -> str:
+    """
+    Transforms data from an existing file and saves it to the output folder.
     
     Args:
-      file_path: The path of the file from which the data is to be transformed.
-      output_folder: The folder path where the transformed data is to be loaded.
-      output_format: The format in which the transformed data is to be loaded.
-      
-    Returns:
-      str: A message indicating the success or failure of the operation
-  """
-  etl_tools=ETLTools()
-  top_3_rows=etl_tools.transform_load_context(input_file_path)
-  llm=pick_llm("gemini")
-  
-  prompt = f"""
-You are a Python Data Analyst who uses Pandas to analyze data.
-You need to provide only the Pandas code that will help to perform the right ETL operations as per the user's question.
-Do not provide any explanation or comments, only the code should be provided.
-The code should be in a format that can be executed in a Python environment with Pandas installed.
-Don't write anything else than Pandas code.
-
-Create the Pandas DataFrame from the data stored in the file: {input_file_path}
-and write the code to transform and save the data at {output_folder}.
-
-Here's the user's question: {user_question}\n
-
-Here's the context of the data you will be analyzing: {top_3_rows}\n
-"""
-
-  print("Starting Gemini transformation...")
-  response = llm.invoke(prompt)
-  print("Gemini transformation response received!")
-
-  if isinstance(response.content, str):
-      pandas_code = response.content
-  else:
-      pandas_code = "".join(
-          block.get("text", "")
-          for block in response.content
-          if isinstance(block, dict)
-      )
-
-  pandas_code = pandas_code.strip()
-
-  if pandas_code.startswith("```"):
-      pandas_code = re.sub(
-          r"^```(?:python)?\s*",
-          "",
-          pandas_code,
-          flags=re.IGNORECASE
-      )
-      pandas_code = re.sub(
-          r"\s*```$",
-          "",
-          pandas_code
-      ).strip()
-
-  #execute the code
-  print("Starting code execution...")
-  results = etl_tools.execute_code(pandas_code)
-  print("Code execution finished!")
-
-  return f"The data is transformed and saved at {output_folder} in {output_format} format. \n\n Pandas Code Executed: \n {pandas_code}\n\n Results: \n {results}"
-
-
-tools=[extract_load_tool,transform_load_tool]
-
-llm=pick_llm("gemini")
-llm_bind=llm.bind_tools(tools)
-
-
-#-------------------------------------------------------AGENT GRAPH-------------------------------------------------------------------------------------
-
-def llm_node(state: EtlAgentSchema):
-
-    messages = state.messages
+        input_file_path: Path to the raw data file (e.g. data/extract/extracted_data.csv).
+        output_folder: Directory to save transformed data.
+        output_format: 'csv', 'json', or 'parquet'.
+        user_question: Specific filtering or transformation requirement.
+    """
+    etl_tools = ETLTools()
+    top_3_rows = etl_tools.transform_load_context(input_file_path)
+    llm = pick_llm("gemini")
 
     prompt = f"""
-You are a Python Data Analyst who has access to tools that can extract and load,
-transform and load data. You will be provided with a user's question
-and you would need to perform the right ETL operations as per the user's question.
+You are an expert Python Data Analyst who uses Pandas to transform datasets.
+Write ONLY executable Python code (using pandas as pd and os) that performs the requested ETL transformation.
 
-If the operation is performed then inform the user and end the conversation.
+RULES:
+1. Load dataset from: '{input_file_path}'
+2. Perform transformation: '{user_question}'
+3. Save result to directory: '{output_folder}' with format '{output_format}' (e.g., 'transformed_data.{output_format}')
+4. Ensure os.makedirs('{output_folder}', exist_ok=True) is called.
+5. Return ONLY python code without markdown fences, explanation, or comments.
 
-Here's the chat history:
-{messages}
+Dataset Context:
+{top_3_rows}
 """
 
+    response = llm.invoke(prompt)
+
+    if isinstance(response.content, str):
+        pandas_code = response.content
+    else:
+        pandas_code = "".join(
+            block.get("text", "") for block in response.content if isinstance(block, dict)
+        )
+
+    pandas_code = pandas_code.strip()
+    pandas_code = re.sub(r"^```(?:python)?\s*", "", pandas_code, flags=re.IGNORECASE)
+    pandas_code = re.sub(r"\s*```$", "", pandas_code).strip()
+
+    # Execute the code
+    results = etl_tools.execute_code(pandas_code)
+
+    return f"Transformation complete.\n\nGenerated Code:\n```python\n{pandas_code}\n```\n\nExecution Log:\n{results}"
+
+
+tools = [extract_load_tool, transform_load_tool]
+llm = pick_llm("gemini")
+llm_bind = llm.bind_tools(tools)
+
+
+# -------------------------------------------------------AGENT GRAPH-------------------------------------------------------------------------------------
+
+def llm_node(state: EtlAgentSchema):
+    messages = state.messages
+    prompt = f"""
+You are an ETL Data Analyst with tools to extract API data and transform local datasets.
+Given the user request, call the appropriate tool with the right parameters.
+
+Chat History:
+{messages}
+"""
     response = llm_bind.invoke(prompt)
-
     state.messages = messages + [response]
-
     return state
 
 
-
 def tool_node(state: EtlAgentSchema):
-
     tools_results = []
-
-    tools_by_name = {
-        tool.name: tool
-        for tool in tools
-    }
-
+    tools_by_name = {tool.name: tool for tool in tools}
     tool_calls = state.messages[-1].tool_calls
 
     for tool_call in tool_calls:
-
-        tool = tools_by_name[tool_call["name"]]
-
-        observation = tool.invoke(
-            tool_call["args"]
-        )
-
+        tool_obj = tools_by_name[tool_call["name"]]
+        observation = tool_obj.invoke(tool_call["args"])
         tools_results.append(
             ToolMessage(
                 content=str(observation),
@@ -170,15 +123,12 @@ def tool_node(state: EtlAgentSchema):
         )
 
     state.messages = state.messages + tools_results
-
     return state
 
-  
-  
-#------------------------------------------Nodes & Edges--------------------------------------------------------
-  
-etl_analyst_graph = StateGraph(EtlAgentSchema)
 
+# ------------------------------------------Nodes & Edges--------------------------------------------------------
+
+etl_analyst_graph = StateGraph(EtlAgentSchema)
 etl_analyst_graph.add_node("llm_node", llm_node)
 etl_analyst_graph.add_node("tool_node", tool_node)
 
@@ -186,68 +136,34 @@ etl_analyst_graph.add_edge(START, "llm_node")
 
 
 def is_tool_call(state: EtlAgentSchema):
-
     tool_calls = state.messages[-1].tool_calls
-
     if tool_calls:
         return "tool_node"
-    else:
-        return "END"
+    return "END"
 
 
 etl_analyst_graph.add_conditional_edges(
     "llm_node",
     is_tool_call,
     {
-        "tool_node": "tool_node",   
+        "tool_node": "tool_node",
         "END": END
     }
 )
 
-etl_analyst_graph.add_edge(
-    "tool_node",
-    "llm_node"
-)
+etl_analyst_graph.add_edge("tool_node", "llm_node")
 
 etl_analyst = etl_analyst_graph.compile()
 
+
 if __name__ == "__main__":
-
-    from IPython.display import display, Image
-
-    img = Image(
-        etl_analyst.get_graph().draw_mermaid_png()
-    )
-
-    display(img)
-
-    with open("etl_analyst_graph.png", "wb") as f:
-        f.write(img.data)
-        
-        
-    response=etl_analyst.invoke(
-      {
-        "messages":[
-          HumanMessage(content=f"""
-            I want to transform the data and stored in the 'D:\\Project\\OLA_AI_DataAgent\\data\\extract\\extracted_data.csv' file
-            and save the transformed data in the 'D:\\Project\\OLA_AI_DataAgent\\data\\transform' folder in the csv format.
-            The transform should filter the data to show bulbasaur pokemon only
-            """
+    test_req = {
+        "messages": [
+            HumanMessage(
+                content="Extract data from https://pokeapi.co/api/v2/pokemon and save to data/extract as csv"
             )
         ]
-      }
-    )
-    
-    final_content = response["messages"][-1].content
-
-    if isinstance(final_content, list):
-        final_answer = "".join(
-            item["text"]
-            for item in final_content
-            if isinstance(item, dict) and "text" in item
-        )
-    else:
-        final_answer = final_content
-
-    print("\nFinal Answer:")
-    print(final_answer)
+    }
+    res = etl_analyst.invoke(test_req)
+    print("\n--- ETL Result ---")
+    print(res["messages"][-1].content)

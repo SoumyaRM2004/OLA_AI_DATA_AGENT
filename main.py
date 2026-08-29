@@ -1,36 +1,34 @@
-from agents.data_agent import data_agent
+import sys
+from agents.data_agent import execute_agent_query
 
-from langchain_core.messages import HumanMessage
+def main():
+    print("=" * 60)
+    print("🚗 OLA AI Data Agent (Multi-Agent System with SQL & ETL)")
+    print("=" * 60)
 
-# if __name__=="__main__":
-#   response=data_agent.invoke(
-#     {"messages":[HumanMessage
-#               #(content="Give the driver id which get comment as Smooth Ride ") 
-#               (content=f"I want to extract the data from the API end point 'https://pokeapi.co/api/v2/pokemon' and save it to data/extract folder as csv format"
+    if len(sys.argv) > 1 and sys.argv[1] == "--server":
+        import uvicorn
+        print("\n🌐 Launching Interactive Web Dashboard on http://localhost:8000 ...\n")
+        uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
+        return
 
-#               )],
-     
-#     "route_response": ""
-#   }
-#   )
-  
-#   answer = response["messages"][-1]["final_answer"]
+    # Default CLI interactive mode
+    print("\nTip: Run with `python main.py --server` to launch the Web UI!")
+    print("Type your query below or type 'exit' to quit.\n")
 
-#   print(answer)
+    # Sample query if no stdin
+    default_prompt = "What are the top 5 highest rated drivers with their average ratings?"
+    print(f"Executing sample query: '{default_prompt}'\n")
+    
+    result = execute_agent_query(default_prompt)
+    
+    print("\n" + "=" * 40 + " RESULT " + "=" * 40)
+    print(f"Route: {result.get('route', '').upper()} Analyst")
+    if result.get("sql_query"):
+        print(f"Generated SQL:\n{result['sql_query']}")
+        print(f"Security Check: {result.get('is_safe')} ({result.get('judge_comments')})")
+    print(f"\nFinal Answer:\n{result.get('answer')}")
+    print("=" * 88)
 
 if __name__ == "__main__":
-
-    response = data_agent.invoke(
-        {
-            "messages": [
-                HumanMessage(
-                    content="I want to extract the data from the API end point 'https://pokeapi.co/api/v2/pokemon' and save it to data/extract folder as csv format"
-                )
-            ],
-            "route_response": ""
-        }
-    )
-
-    print(response["messages"][-1]["final_answer"])
-  
-
+    main()

@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OLA AI Data Agent — Intelligent Mobility Analytics</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Highlight.js for SQL/Python Code -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="dark-theme">
+    <div class="app-layout">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-icon">
+                    <i data-lucide="car"></i>
+                </div>
+                <div class="brand-text">
+                    <h2>OLA DataAgent</h2>
+                    <span class="badge-ai">Multi-Agent AI</span>
+                </div>
+            </div>
+
+            <nav class="nav-menu">
+                <button class="nav-item active" data-tab="chat-view">
+                    <i data-lucide="message-square"></i>
+                    <span>AI Chat Studio</span>
+                </button>
+                <button class="nav-item" data-tab="overview-view">
+                    <i data-lucide="bar-chart-3"></i>
+                    <span>Analytics KPI</span>
+                </button>
+                <button class="nav-item" data-tab="db-view">
+                    <i data-lucide="database"></i>
+                    <span>Database Explorer</span>
+                </button>
+                <button class="nav-item" data-tab="etl-view">
+                    <i data-lucide="workflow"></i>
+                    <span>ETL Studio</span>
+                </button>
+                <button class="nav-item" data-tab="architecture-view">
+                    <i data-lucide="network"></i>
+                    <span>Agent Architecture</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="status-card">
+                    <div class="status-indicator online"></div>
+                    <div class="status-info">
+                        <span class="status-title">PostgreSQL Ready</span>
+                        <span class="status-sub" id="sidebar-db-status">Connected to OLA DB</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Top Header -->
+            <header class="top-header">
+                <div class="header-left">
+                    <h1 id="page-title">AI Chat Studio</h1>
+                    <p id="page-description">Ask natural language questions to query the PostgreSQL database or trigger ETL pipelines.</p>
+                </div>
+                <div class="header-right">
+                    <div class="badge-tag">
+                        <i data-lucide="cpu"></i>
+                        <span>Groq + Gemini</span>
+                    </div>
+                    <div class="badge-tag">
+                        <i data-lucide="shield-check"></i>
+                        <span>LLM Security Judge Active</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- TAB 1: AI CHAT STUDIO -->
+            <section id="chat-view" class="tab-pane active">
+                <div class="chat-container">
+                    <!-- Suggested Query Chips -->
+                    <div class="query-chips">
+                        <span class="chips-label"><i data-lucide="sparkles"></i> Try asking:</span>
+                        <button class="chip" data-prompt="What are the top 5 highest rated drivers?">🏆 Top 5 Drivers</button>
+                        <button class="chip" data-prompt="Show total revenue grouped by payment method">💳 Revenue by Payment</button>
+                        <button class="chip" data-prompt="What is the distribution of ride statuses?">🚗 Ride Status Breakdown</button>
+                        <button class="chip" data-prompt="Show average ride fare and distance for completed rides">💰 Average Fare & Distance</button>
+                        <button class="chip" data-prompt="Extract data from https://pokeapi.co/api/v2/pokemon and save to data/extract as csv">⚡ Extract Pokémon API</button>
+                    </div>
+
+                    <!-- Messages Stream -->
+                    <div class="messages-area" id="messages-area">
+                        <!-- Welcome Message -->
+                        <div class="message-card agent-message">
+                            <div class="message-header">
+                                <div class="avatar agent-avatar"><i data-lucide="bot"></i></div>
+                                <div class="message-meta">
+                                    <span class="sender-name">OLA AI Data Agent</span>
+                                    <span class="message-time">Just now</span>
+                                </div>
+                            </div>
+                            <div class="message-body">
+                                <p>Hello! I am your AI Data Agent for the OLA Ride-Hailing platform. You can ask me:</p>
+                                <ul>
+                                    <li>📊 <strong>SQL Analytics</strong>: Query rides, fares, top drivers, payments, and ratings in natural language.</li>
+                                    <li>🔄 <strong>ETL Operations</strong>: Extract data from public APIs or run Pandas transformations on CSV/JSON/Parquet datasets.</li>
+                                </ul>
+                                <p>Every SQL query is evaluated by a dedicated <strong>Security Judge</strong> before execution for safe read-only analytics!</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Chat Input Box -->
+                    <div class="chat-input-wrapper">
+                        <form id="chat-form" class="chat-form">
+                            <div class="input-container">
+                                <i data-lucide="search" class="input-icon"></i>
+                                <input 
+                                    type="text" 
+                                    id="chat-input" 
+                                    placeholder="Ask anything about OLA rides, drivers, payments, or request an ETL extraction..."
+                                    autocomplete="off"
+                                    required
+                                >
+                                <button type="submit" id="send-btn" class="btn-send">
+                                    <span>Ask Agent</span>
+                                    <i data-lucide="send"></i>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 2: OVERVIEW / KPI DASHBOARD -->
+            <section id="overview-view" class="tab-pane">
+                <div class="dashboard-grid">
+                    <!-- KPI Cards -->
+                    <div class="kpi-row">
+                        <div class="kpi-card">
+                            <div class="kpi-icon emerald"><i data-lucide="navigation"></i></div>
+                            <div class="kpi-content">
+                                <span class="kpi-label">Total Rides</span>
+                                <h3 class="kpi-value" id="kpi-total-rides">...</h3>
+                                <span class="kpi-sub" id="kpi-completed-rides">... completed</span>
+                            </div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-icon cyan"><i data-lucide="indian-rupee"></i></div>
+                            <div class="kpi-content">
+                                <span class="kpi-label">Total Revenue</span>
+                                <h3 class="kpi-value" id="kpi-revenue">...</h3>
+                                <span class="kpi-sub">Successful payments</span>
+                            </div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-icon purple"><i data-lucide="users"></i></div>
+                            <div class="kpi-content">
+                                <span class="kpi-label">Total Users</span>
+                                <h3 class="kpi-value" id="kpi-users">...</h3>
+                                <span class="kpi-sub">Riders & Drivers</span>
+                            </div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-icon amber"><i data-lucide="star"></i></div>
+                            <div class="kpi-content">
+                                <span class="kpi-label">Average Rating</span>
+                                <h3 class="kpi-value" id="kpi-rating">...</h3>
+                                <span class="kpi-sub">Across all trips</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Charts Row -->
+                    <div class="charts-row">
+                        <div class="chart-card">
+                            <div class="chart-header">
+                                <h3><i data-lucide="pie-chart"></i> Payment Methods Breakdown</h3>
+                            </div>
+                            <div class="chart-wrapper">
+                                <canvas id="chart-payment-methods"></canvas>
+                            </div>
+                        </div>
+                        <div class="chart-card">
+                            <div class="chart-header">
+                                <h3><i data-lucide="activity"></i> Rides by Status</h3>
+                            </div>
+                            <div class="chart-wrapper">
+                                <canvas id="chart-ride-status"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Top Drivers Table -->
+                    <div class="table-card">
+                        <div class="table-card-header">
+                            <h3><i data-lucide="award"></i> Top Rated Drivers</h3>
+                            <button class="btn-refresh" id="refresh-stats-btn"><i data-lucide="rotate-cw"></i> Refresh Stats</button>
+                        </div>
+                        <div class="table-responsive" id="top-drivers-table-wrapper">
+                            <p class="loading-text">Loading top drivers...</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 3: DATABASE EXPLORER -->
+            <section id="db-view" class="tab-pane">
+                <div class="db-explorer-container">
+                    <div class="db-sidebar">
+                        <h3><i data-lucide="layers"></i> Database Tables</h3>
+                        <div class="table-list" id="db-table-list">
+                            <!-- Populated via JS -->
+                        </div>
+                    </div>
+
+                    <div class="db-main">
+                        <div class="db-header-bar">
+                            <div>
+                                <h2 id="active-table-title">Select a table</h2>
+                                <span class="table-meta" id="active-table-meta">...</span>
+                            </div>
+                            <div class="table-actions">
+                                <input type="text" id="db-search-input" placeholder="Search rows..." class="db-search">
+                            </div>
+                        </div>
+
+                        <div class="schema-collapsible">
+                            <details id="schema-details-accordion">
+                                <summary><i data-lucide="table-properties"></i> View Column Data Types & Schema</summary>
+                                <div id="schema-columns-table" class="schema-inner-table">
+                                    <!-- Column schema table -->
+                                </div>
+                            </details>
+                        </div>
+
+                        <div class="db-data-view">
+                            <div class="table-responsive" id="active-table-data-wrapper">
+                                <p class="placeholder-text">Select a table from the sidebar to inspect records.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 4: ETL STUDIO -->
+            <section id="etl-view" class="tab-pane">
+                <div class="etl-grid">
+                    <!-- Extraction Box -->
+                    <div class="etl-card">
+                        <div class="etl-card-header">
+                            <div class="etl-icon emerald"><i data-lucide="download-cloud"></i></div>
+                            <div>
+                                <h3>API Data Extractor</h3>
+                                <p>Extract structured JSON from any REST endpoint and save as CSV, JSON, or Parquet.</p>
+                            </div>
+                        </div>
+                        <form id="etl-extract-form" class="etl-form">
+                            <div class="form-group">
+                                <label>API Endpoint URL</label>
+                                <input type="url" id="extract-url" value="https://pokeapi.co/api/v2/pokemon" required>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Output Format</label>
+                                    <select id="extract-format">
+                                        <option value="csv">CSV (.csv)</option>
+                                        <option value="json">JSON (.json)</option>
+                                        <option value="parquet">Parquet (.parquet)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Save Folder</label>
+                                    <input type="text" id="extract-folder" value="data/extract">
+                                </div>
+                            </div>
+                            <button type="submit" class="btn-primary" id="btn-run-extract">
+                                <i data-lucide="play"></i> Run Extraction
+                            </button>
+                        </form>
+                        <div id="extract-output" class="etl-output-box"></div>
+                    </div>
+
+                    <!-- Transformation Box -->
+                    <div class="etl-card">
+                        <div class="etl-card-header">
+                            <div class="etl-icon cyan"><i data-lucide="cpu"></i></div>
+                            <div>
+                                <h3>Natural Language Transformer</h3>
+                                <p>Describe transformations in plain English. The agent writes and executes Pandas code.</p>
+                            </div>
+                        </div>
+                        <form id="etl-transform-form" class="etl-form">
+                            <div class="form-group">
+                                <label>Input File Path</label>
+                                <input type="text" id="transform-file" value="data/extract/extracted_data.csv" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Transformation Requirement</label>
+                                <textarea id="transform-prompt" rows="3" placeholder="e.g., Filter rows where name starts with 'p' and add a timestamp column" required></textarea>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Output Format</label>
+                                    <select id="transform-format">
+                                        <option value="csv">CSV (.csv)</option>
+                                        <option value="json">JSON (.json)</option>
+                                        <option value="parquet">Parquet (.parquet)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Output Folder</label>
+                                    <input type="text" id="transform-folder" value="data/transform">
+                                </div>
+                            </div>
+                            <button type="submit" class="btn-primary" id="btn-run-transform">
+                                <i data-lucide="code"></i> Generate & Execute Transform
+                            </button>
+                        </form>
+                        <div id="transform-output" class="etl-output-box"></div>
+                    </div>
+                </div>
+
+                <!-- Existing Files Preview -->
+                <div class="files-preview-section">
+                    <div class="table-card-header">
+                        <h3><i data-lucide="folder-open"></i> Extracted & Transformed Files Explorer</h3>
+                        <button class="btn-refresh" id="refresh-files-btn"><i data-lucide="rotate-cw"></i> Refresh Files</button>
+                    </div>
+                    <div id="files-list-wrapper" class="files-chips"></div>
+                    <div id="file-preview-table-wrapper" class="table-responsive" style="margin-top: 15px;"></div>
+                </div>
+            </section>
+
+            <!-- TAB 5: ARCHITECTURE & GRAPH -->
+            <section id="architecture-view" class="tab-pane">
+                <div class="arch-container">
+                    <div class="arch-card">
+                        <h3><i data-lucide="git-branch"></i> Multi-Agent Orchestration Flow</h3>
+                        <p>The system uses <strong>LangGraph</strong> to route user intent to specialized sub-agents with stateful transitions.</p>
+                        
+                        <div class="pipeline-flow">
+                            <div class="flow-step">
+                                <div class="step-num">1</div>
+                                <h4>Router Node</h4>
+                                <p>Uses Gemini with Structured Output (<code>RouterSchema</code>) to classify query as SQL or ETL.</p>
+                            </div>
+                            <div class="flow-arrow"><i data-lucide="arrow-right"></i></div>
+                            <div class="flow-step">
+                                <div class="step-num">2</div>
+                                <h4>Specialist Agent</h4>
+                                <p><strong>SQL Analyst:</strong> Schema enrichment & SQL generation.<br><strong>ETL Analyst:</strong> API extract & Pandas tool binding.</p>
+                            </div>
+                            <div class="flow-arrow"><i data-lucide="arrow-right"></i></div>
+                            <div class="flow-step">
+                                <div class="step-num">3</div>
+                                <h4>LLM as Judge</h4>
+                                <p>Validates SQL queries against strict read-only security policies before database execution.</p>
+                            </div>
+                            <div class="flow-arrow"><i data-lucide="arrow-right"></i></div>
+                            <div class="flow-step">
+                                <div class="step-num">4</div>
+                                <h4>Synthesizer & Charts</h4>
+                                <p>Generates natural language answer, tabular data, and auto-detects chart configurations.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="arch-grid-two">
+                        <div class="arch-card">
+                            <h3><i data-lucide="shield-alert"></i> SQL Security Judge Policy</h3>
+                            <ul class="security-list">
+                                <li><i data-lucide="check-circle" class="text-green"></i> <strong>Allowed:</strong> <code>SELECT</code>, <code>WITH</code>, aggregations, joins, subqueries</li>
+                                <li><i data-lucide="x-circle" class="text-red"></i> <strong>Blocked:</strong> <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>DROP</code></li>
+                                <li><i data-lucide="x-circle" class="text-red"></i> <strong>Blocked:</strong> <code>ALTER</code>, <code>TRUNCATE</code>, <code>CREATE</code>, <code>GRANT</code>, <code>REVOKE</code></li>
+                                <li><i data-lucide="shield" class="text-cyan"></i> <strong>Execution:</strong> Transactions auto-rollback on non-select triggers</li>
+                            </ul>
+                        </div>
+
+                        <div class="arch-card">
+                            <h3><i data-lucide="cpu"></i> Multi-Tier LLM Strategy</h3>
+                            <div class="model-tiers-table">
+                                <div class="tier-item">
+                                    <span class="tier-badge low">Low (Fast)</span>
+                                    <span class="tier-name">openai/gpt-oss-20b (Groq)</span>
+                                    <span class="tier-role">Question Curation & Answer Synthesis</span>
+                                </div>
+                                <div class="tier-item">
+                                    <span class="tier-badge medium">Medium</span>
+                                    <span class="tier-name">qwen/qwen3.6-27b (Groq)</span>
+                                    <span class="tier-role">SQL Query Generation</span>
+                                </div>
+                                <div class="tier-item">
+                                    <span class="tier-badge high">High</span>
+                                    <span class="tier-name">openai/gpt-oss-120b (Groq)</span>
+                                    <span class="tier-role">Security Validation Judge</span>
+                                </div>
+                                <div class="tier-item">
+                                    <span class="tier-badge gemini">Gemini</span>
+                                    <span class="tier-name">gemini-3.5-flash (Google)</span>
+                                    <span class="tier-role">Router & ETL Tool Binding</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- App JavaScript -->
+    <script src="/static/js/app.js"></script>
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+    </script>
+</body>
+</html>
