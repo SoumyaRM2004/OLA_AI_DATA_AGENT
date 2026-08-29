@@ -13,7 +13,7 @@ sys.path.append(
 )
 
 from utils.llm_pick import pick_llm, get_message_text
-from utils.etl_tools import ETLTools
+from utils.etl_tools import ETLTools, CITY_COORDINATES
 from model.schema import EtlAgentSchema
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
@@ -21,6 +21,29 @@ from langchain.tools import tool
 
 
 # ----------------------------------AGENT TOOLS----------------------------------------------------------
+
+@tool
+def extract_8_cities_weather_tool(
+    start_date: str = "2025-01-01",
+    end_date: str = "2025-01-31",
+    output_folder: str = "data/extract",
+    output_format: str = "csv"
+) -> str:
+    """
+    Extracts hourly weather data for all 8 ride-hailing cities (Calgary, Edmonton, Halifax,
+    Montreal, Ottawa, Toronto, Vancouver, Winnipeg) from Open-Meteo Archive API and
+    saves the consolidated dataset into data/extract/weather_data.csv.
+    
+    Args:
+        start_date: Start date in YYYY-MM-DD format (default: 2025-01-01).
+        end_date: End date in YYYY-MM-DD format (default: 2025-01-31).
+        output_folder: The directory to save the file into (default: data/extract).
+        output_format: 'csv', 'json', or 'parquet'.
+    """
+    etl_tools = ETLTools()
+    result = etl_tools.extract_multi_city_weather(start_date, end_date, output_folder, output_format)
+    return result
+
 
 @tool
 def extract_load_tool(url: str, output_folder: str = "data/extract", output_format: str = "csv") -> str:
@@ -57,7 +80,7 @@ def transform_load_tool(
     """
     etl_tools = ETLTools()
     top_3_rows = etl_tools.transform_load_context(input_file_path)
-    llm = pick_llm("gemini")
+    llm = pick_llm("low")
 
     prompt = f"""
 You are an expert Python Data Analyst who uses Pandas to transform datasets.
@@ -91,7 +114,7 @@ Dataset Context:
 def load_to_postgres_tool(file_path: str = "data/extract/weather_data.csv", table_name: str = "weather_data") -> str:
     """
     Loads an extracted or transformed CSV/JSON dataset into a PostgreSQL database table (e.g. weather_data)
-    for subsequent SQL analysis and cross-table joins.
+    with duplicate prevention (upsert on city + recorded_at).
     
     Args:
         file_path: Path to the dataset file to load.
@@ -102,8 +125,8 @@ def load_to_postgres_tool(file_path: str = "data/extract/weather_data.csv", tabl
     return result
 
 
-tools = [extract_load_tool, transform_load_tool, load_to_postgres_tool]
-llm = pick_llm("gemini")
+tools = [extract_8_cities_weather_tool, extract_load_tool, transform_load_tool, load_to_postgres_tool]
+llm = pick_llm("low")
 llm_bind = llm.bind_tools(tools)
 
 
@@ -113,77 +136,71 @@ def llm_node(state: EtlAgentSchema):
     messages = state.messages
     prompt = f"""
 You are an ETL Data Analyst for an OLA-inspired mobility platform with tools to:
-1. Extract external API data (such as Open-Meteo Weather data or other open data endpoints).
-2. Transform datasets using Pandas.
-3. Load extracted datasets into PostgreSQL tables (like weather_data) for cross-table analytics.
+1. Extract weather data across all 8 ride-hailing cities (Calgary, Edmonton, Halifax, Montreal, Ottawa, Toronto, Vancouver, Winnipeg) from Open-Meteo Archive API.
+2. Extract generic API data from REST endpoints.
+3. Transform datasets using Pandas.
+4. Load datasets into PostgreSQL tables (e.g. weather_data) with duplicate prevention.
+
+Available 8 Cities: {', '.join(CITY_COORDINATES.keys())}
+Rides Date Overlap: January 2025 (2025-01-01 to 2025-01-31)
 
 Given the user request, call the appropriate tool with the right parameters.
-
-Chat History:
-{messages}
 """
-    response = llm_bind.invoke(prompt)
-    state.messages = messages + [response]
-    return state
+    history = [HumanMessage(content=prompt)] + messages
+    response = llm_bind.invoke(history)
+    return {"messages": [response]}
 
 
-def tool_node(state: EtlAgentSchema):
-    tools_results = []
-    tools_by_name = {tool.name: tool for tool in tools}
-    tool_calls = state.messages[-1].tool_calls
+def tool_execution(state: EtlAgentSchema):
+    last_message = state.messages[-1]
+    tool_calls = getattr(last_message, "tool_calls", [])
+    tool_messages = []
+
+    tools_dict = {
+        "extract_8_cities_weather_tool": extract_8_cities_weather_tool,
+        "extract_load_tool": extract_load_tool,
+        "transform_load_tool": transform_load_tool,
+        "load_to_postgres_tool": load_to_postgres_tool
+    }
 
     for tool_call in tool_calls:
-        tool_obj = tools_by_name[tool_call["name"]]
-        observation = tool_obj.invoke(tool_call["args"])
-        tools_results.append(
-            ToolMessage(
-                content=str(observation),
-                tool_call_id=tool_call["id"]
-            )
-        )
+        name = tool_call["name"]
+        args = tool_call["args"]
+        call_id = tool_call["id"]
 
-    state.messages = state.messages + tools_results
-    return state
+        if name in tools_dict:
+            try:
+                selected_tool = tools_dict[name]
+                tool_output = selected_tool.invoke(args)
+            except Exception as e:
+                tool_output = f"Tool execution failed: {e}"
+        else:
+            tool_output = f"Unknown tool: {name}"
 
+        tool_messages.append(ToolMessage(
+            content=str(tool_output),
+            tool_call_id=call_id
+        ))
 
-# ------------------------------------------Nodes & Edges--------------------------------------------------------
-
-etl_analyst_graph = StateGraph(EtlAgentSchema)
-etl_analyst_graph.add_node("llm_node", llm_node)
-etl_analyst_graph.add_node("tool_node", tool_node)
-
-etl_analyst_graph.add_edge(START, "llm_node")
-
-
-def is_tool_call(state: EtlAgentSchema):
-    tool_calls = state.messages[-1].tool_calls
-    if tool_calls:
-        return "tool_node"
-    return "END"
+    return {"messages": tool_messages}
 
 
-etl_analyst_graph.add_conditional_edges(
-    "llm_node",
-    is_tool_call,
-    {
-        "tool_node": "tool_node",
-        "END": END
-    }
-)
-
-etl_analyst_graph.add_edge("tool_node", "llm_node")
-
-etl_analyst = etl_analyst_graph.compile()
+def condition_node(state: EtlAgentSchema):
+    last_message = state.messages[-1]
+    tool_calls = getattr(last_message, "tool_calls", [])
+    if len(tool_calls) > 0:
+        return "tool_execution"
+    return END
 
 
-if __name__ == "__main__":
-    test_req = {
-        "messages": [
-            HumanMessage(
-                content="Extract weather data from https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code and save to data/extract as csv"
-            )
-        ]
-    }
-    res = etl_analyst.invoke(test_req)
-    print("\n--- ETL Result ---")
-    print(res["messages"][-1].content)
+# ----------------------------------------------------GRAPH COMPILATION---------------------------------------------------
+
+graph = StateGraph(EtlAgentSchema)
+graph.add_node("llm_node", llm_node)
+graph.add_node("tool_execution", tool_execution)
+
+graph.add_edge(START, "llm_node")
+graph.add_conditional_edges("llm_node", condition_node)
+graph.add_edge("tool_execution", "llm_node")
+
+etl_analyst = graph.compile()

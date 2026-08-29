@@ -99,12 +99,13 @@
                     <!-- Suggested Query Chips -->
                     <div class="query-chips">
                         <span class="chips-label"><i data-lucide="sparkles"></i> Try asking:</span>
-                        <button class="chip" data-prompt="Does rainfall correlate with ride cancellations?">🌦️ Rain vs. Cancellations</button>
-                        <button class="chip" data-prompt="Compare average surge multiplier during rainy and non-rainy periods">📈 Surge in Rainy Periods</button>
+                        <button class="chip" data-prompt="Compare ride cancellation rates during rainy and non-rainy periods.">🌦️ Rain vs. Cancellations</button>
+                        <button class="chip" data-prompt="Compare average surge multiplier during rainy and non-rainy periods.">📈 Surge in Rainy Periods</button>
+                        <button class="chip" data-prompt="Compare average rainfall across the 8 cities.">🌧️ Rainfall Across 8 Cities</button>
+                        <button class="chip" data-prompt="Which city had the highest average rainfall?">🥇 Highest Rainfall City</button>
+                        <button class="chip" data-prompt="Compare average fare on rainy versus non-rainy days.">💵 Fare: Rainy vs Dry Days</button>
                         <button class="chip" data-prompt="What are the top 5 highest rated drivers with their average ratings?">🏆 Top 5 Drivers</button>
-                        <button class="chip" data-prompt="Show total revenue grouped by payment method">💳 Revenue by Payment</button>
-                        <button class="chip" data-prompt="Show average rainfall and temperature by date from weather data">🌧️ Daily Weather Summary</button>
-                        <button class="chip" data-prompt="Extract weather data from https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code and save to data/extract as csv">⚡ Extract Open-Meteo</button>
+                        <button class="chip" data-prompt="Extract weather data for all 8 ride-hailing cities and save to data/extract as csv">⚡ Extract 8 Cities Weather</button>
                     </div>
 
                     <!-- Messages Stream -->
@@ -119,10 +120,10 @@
                                 </div>
                             </div>
                             <div class="message-body">
-                                <p>Welcome to the <strong>OLA Mobility Intelligence Platform</strong>! I am your AI Data Agent combining synthetic ride-hailing datasets with external <strong>Open-Meteo weather data</strong>.</p>
+                                <p>Welcome to the <strong>OLA Mobility Intelligence Platform</strong>! I am your AI Data Agent combining synthetic ride-hailing datasets with external <strong>Open-Meteo weather data across all 8 Canadian ride-hailing cities</strong>.</p>
                                 <ul>
-                                    <li>📊 <strong>SQL Analytics</strong>: Query rides, fares, driver ratings, and correlate ride metrics with weather conditions (rain vs. cancellations, surge pricing).</li>
-                                    <li>🌦️ <strong>Weather & Mobility ETL</strong>: Extract live/historical hourly weather data from Open-Meteo and transform datasets using Pandas.</li>
+                                    <li>📊 <strong>SQL Analytics</strong>: Query rides, fares, driver ratings, and correlate ride metrics with weather conditions (rain vs. cancellations, surge pricing) across Calgary, Edmonton, Halifax, Montreal, Ottawa, Toronto, Vancouver, and Winnipeg.</li>
+                                    <li>🌦️ <strong>Weather & Mobility ETL</strong>: Extract historical hourly weather data for all 8 cities from Open-Meteo Archive API and transform datasets using Pandas.</li>
                                 </ul>
                                 <p>Every SQL query is evaluated by an automated <strong>Security Judge</strong> before execution for safe read-only analytics!</p>
                             </div>
@@ -137,7 +138,7 @@
                                 <input 
                                     type="text" 
                                     id="chat-input" 
-                                    placeholder="Ask anything about OLA rides, rain correlation, driver ratings, or request an ETL extraction..."
+                                    placeholder="Ask anything about OLA rides, 8-city weather correlation, fares, or request an ETL extraction..."
                                     autocomplete="off"
                                     required
                                 >
@@ -188,6 +189,14 @@
                                 <span class="kpi-sub">Across all trips</span>
                             </div>
                         </div>
+                        <div class="kpi-card">
+                            <div class="kpi-icon blue"><i data-lucide="cloud-lightning"></i></div>
+                            <div class="kpi-content">
+                                <span class="kpi-label">Weather Coverage</span>
+                                <h3 class="kpi-value" id="kpi-weather-cities">8 Cities</h3>
+                                <span class="kpi-sub" id="kpi-weather-records">5,952 records (Jan 2025)</span>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Charts Row -->
@@ -206,6 +215,14 @@
                             </div>
                             <div class="chart-wrapper">
                                 <canvas id="chart-ride-status"></canvas>
+                            </div>
+                        </div>
+                        <div class="chart-card">
+                            <div class="chart-header">
+                                <h3><i data-lucide="cloud-rain"></i> Total Rainfall by City (Jan 2025)</h3>
+                            </div>
+                            <div class="chart-wrapper">
+                                <canvas id="chart-city-rainfall"></canvas>
                             </div>
                         </div>
                     </div>
@@ -270,14 +287,34 @@
                         <div class="etl-card-header">
                             <div class="etl-icon emerald"><i data-lucide="cloud-rain"></i></div>
                             <div>
-                                <h3>Weather & Mobility API Extractor</h3>
-                                <p>Extract structured hourly weather from Open-Meteo or any external REST API into CSV, JSON, or Parquet.</p>
+                                <h3>8-City Weather & Mobility API Extractor</h3>
+                                <p>Extract structured hourly weather from Open-Meteo Archive API for all 8 ride-hailing cities into CSV, JSON, or Parquet.</p>
                             </div>
                         </div>
                         <form id="etl-extract-form" class="etl-form">
                             <div class="form-group">
-                                <label>API Endpoint URL (Open-Meteo Example)</label>
-                                <input type="url" id="extract-url" value="https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code" required>
+                                <label>Target City Selection</label>
+                                <select id="extract-city-select">
+                                    <option value="All 8 Cities">All 8 Ride-Hailing Cities (Calgary, Edmonton, Halifax, Montreal, Ottawa, Toronto, Vancouver, Winnipeg)</option>
+                                    <option value="Toronto">Toronto, ON (43.65, -79.38)</option>
+                                    <option value="Montreal">Montreal, QC (45.50, -73.57)</option>
+                                    <option value="Vancouver">Vancouver, BC (49.28, -123.12)</option>
+                                    <option value="Calgary">Calgary, AB (51.04, -114.07)</option>
+                                    <option value="Edmonton">Edmonton, AB (53.55, -113.49)</option>
+                                    <option value="Ottawa">Ottawa, ON (45.42, -75.70)</option>
+                                    <option value="Winnipeg">Winnipeg, MB (49.90, -97.14)</option>
+                                    <option value="Halifax">Halifax, NS (44.65, -63.58)</option>
+                                </select>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Start Date</label>
+                                    <input type="date" id="extract-start-date" value="2025-01-01">
+                                </div>
+                                <div class="form-group">
+                                    <label>End Date</label>
+                                    <input type="date" id="extract-end-date" value="2025-01-31">
+                                </div>
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
@@ -294,7 +331,7 @@
                                 </div>
                             </div>
                             <button type="submit" class="btn-primary" id="btn-run-extract">
-                                <i data-lucide="play"></i> Extract Weather Data
+                                <i data-lucide="play"></i> Extract Weather Dataset
                             </button>
                         </form>
                         <div id="extract-output" class="etl-output-box"></div>
@@ -316,7 +353,7 @@
                             </div>
                             <div class="form-group">
                                 <label>Transformation Requirement</label>
-                                <textarea id="transform-prompt" rows="3" placeholder="e.g., Filter rows where rain_mm > 0 and calculate average temperature during rainfall" required></textarea>
+                                <textarea id="transform-prompt" rows="3" placeholder="e.g., Filter rows where is_rainy is true and calculate total precipitation by city" required></textarea>
                             </div>
                             <div class="form-row">
                                 <div class="form-group">

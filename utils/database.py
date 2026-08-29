@@ -187,23 +187,24 @@ class DatabaseConnection:
 
     def load_dataframe(self, df: pd.DataFrame, table_name: str = "weather_data") -> Dict[str, Any]:
         """
-        Loads a pandas DataFrame into a PostgreSQL table using safe, parameterized execute_values.
+        Loads a pandas DataFrame into a PostgreSQL table using safe execute_values
+        with duplicate prevention (ON CONFLICT DO UPDATE/NOTHING).
         """
         connection = self.get_connection()
         if not connection:
-            return {"success": False, "error": "Database connection not available."}
+            return {"success": False, "error": "Database connection not available.", "rows_inserted": 0}
 
         cursor = None
         try:
             cursor = connection.cursor()
 
-            # Ensure table exists for weather_data
+            # Ensure table exists with unique constraint on (city, recorded_at) for weather_data
             if table_name == "weather_data":
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS public.weather_data (
                         weather_id SERIAL PRIMARY KEY,
                         recorded_at TIMESTAMP NOT NULL,
-                        city VARCHAR(100),
+                        city VARCHAR(100) NOT NULL,
                         latitude DECIMAL(9,6),
                         longitude DECIMAL(9,6),
                         temperature_c DECIMAL(5,2),
@@ -212,19 +213,35 @@ class DatabaseConnection:
                         weather_code INTEGER,
                         is_rainy BOOLEAN
                     );
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_weather_city_recorded ON public.weather_data(city, recorded_at);
                     CREATE INDEX IF NOT EXISTS idx_weather_recorded_at ON public.weather_data(recorded_at);
                     CREATE INDEX IF NOT EXISTS idx_weather_city ON public.weather_data(city);
                 """)
 
-            # Prepare columns and records
             cols = [c for c in df.columns if c != "weather_id"]
             records = [tuple(x) for x in df[cols].to_numpy()]
 
-            insert_query = sql.SQL("INSERT INTO {}.{} ({}) VALUES %s").format(
-                sql.Identifier("public"),
-                sql.Identifier(table_name),
-                sql.SQL(", ").join(sql.Identifier(col) for col in cols)
-            )
+            if table_name == "weather_data":
+                insert_query = sql.SQL("""
+                    INSERT INTO public.weather_data ({})
+                    VALUES %s
+                    ON CONFLICT (city, recorded_at) DO UPDATE SET
+                        temperature_c = EXCLUDED.temperature_c,
+                        precipitation_mm = EXCLUDED.precipitation_mm,
+                        rain_mm = EXCLUDED.rain_mm,
+                        weather_code = EXCLUDED.weather_code,
+                        is_rainy = EXCLUDED.is_rainy,
+                        latitude = EXCLUDED.latitude,
+                        longitude = EXCLUDED.longitude;
+                """).format(
+                    sql.SQL(", ").join(sql.Identifier(col) for col in cols)
+                )
+            else:
+                insert_query = sql.SQL("INSERT INTO {}.{} ({}) VALUES %s").format(
+                    sql.Identifier("public"),
+                    sql.Identifier(table_name),
+                    sql.SQL(", ").join(sql.Identifier(col) for col in cols)
+                )
 
             execute_values(cursor, insert_query.as_string(connection), records)
             connection.commit()
@@ -264,7 +281,14 @@ class DatabaseConnection:
             "completed_rides": 0,
             "payment_breakdown": [],
             "rides_by_status": [],
-            "top_drivers": []
+            "top_drivers": [],
+            "weather_stats": {
+                "total_records": 0,
+                "cities_count": 0,
+                "avg_temperature": 0.0,
+                "rainy_hours_count": 0,
+                "city_breakdown": []
+            }
         }
 
         try:
@@ -315,6 +339,35 @@ class DatabaseConnection:
                 LIMIT 5;
             """)
             stats["top_drivers"] = res["records"]
+
+            # Weather statistics
+            w_res = self.execute_query_structured("""
+                SELECT 
+                    COUNT(*) AS total_records,
+                    COUNT(DISTINCT city) AS cities_count,
+                    ROUND(AVG(temperature_c)::numeric, 1) AS avg_temperature,
+                    SUM(CASE WHEN is_rainy THEN 1 ELSE 0 END) AS rainy_hours_count
+                FROM public.weather_data;
+            """)
+            if w_res["records"]:
+                stats["weather_stats"]["total_records"] = w_res["records"][0].get("total_records", 0)
+                stats["weather_stats"]["cities_count"] = w_res["records"][0].get("cities_count", 0)
+                stats["weather_stats"]["avg_temperature"] = float(w_res["records"][0].get("avg_temperature", 0) or 0)
+                stats["weather_stats"]["rainy_hours_count"] = w_res["records"][0].get("rainy_hours_count", 0)
+
+            # City weather breakdown
+            w_city = self.execute_query_structured("""
+                SELECT 
+                    city,
+                    ROUND(AVG(temperature_c)::numeric, 1) AS avg_temp,
+                    ROUND(AVG(rain_mm)::numeric, 2) AS avg_rain_mm,
+                    ROUND(SUM(precipitation_mm)::numeric, 1) AS total_precip_mm,
+                    SUM(CASE WHEN is_rainy THEN 1 ELSE 0 END) AS rainy_hours
+                FROM public.weather_data
+                GROUP BY city
+                ORDER BY city;
+            """)
+            stats["weather_stats"]["city_breakdown"] = w_city["records"]
 
         except Exception as e:
             print(f"Error fetching database stats: {e}")

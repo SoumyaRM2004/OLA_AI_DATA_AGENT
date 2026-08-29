@@ -419,6 +419,19 @@ async function loadDashboardStats() {
         document.getElementById('kpi-users').textContent = Number(stats.total_users || 0).toLocaleString();
         document.getElementById('kpi-rating').textContent = `${stats.avg_rating || 0} ★`;
 
+        // Update Weather KPI card
+        if (stats.weather_stats) {
+            const wCities = stats.weather_stats.cities_count || 0;
+            const wRecords = stats.weather_stats.total_records || 0;
+            const wEl = document.getElementById('kpi-weather-cities');
+            const wSubEl = document.getElementById('kpi-weather-records');
+            if (wEl) wEl.textContent = `${wCities} Cities`;
+            if (wSubEl) wSubEl.textContent = `${Number(wRecords).toLocaleString()} records (Jan 2025)`;
+
+            // Render city rainfall chart
+            renderCityRainfallChart(stats.weather_stats.city_breakdown || []);
+        }
+
         // Render Payment Methods Chart
         renderPaymentMethodsChart(stats.payment_breakdown || []);
 
@@ -498,6 +511,44 @@ function renderRideStatusChart(data) {
             scales: {
                 x: { ticks: { color: '#9CA3AF', font: { family: 'Inter' } }, grid: { color: 'rgba(255,255,255,0.05)' } },
                 y: { ticks: { color: '#9CA3AF', font: { family: 'Inter' } }, grid: { color: 'rgba(255,255,255,0.05)' } }
+            }
+        }
+    });
+}
+
+function renderCityRainfallChart(cityData) {
+    const ctx = document.getElementById('chart-city-rainfall');
+    if (!ctx) return;
+
+    if (activeChartInstances.rainfallChart) {
+        activeChartInstances.rainfallChart.destroy();
+    }
+
+    const labels = cityData.map(d => d.city);
+    const rainVals = cityData.map(d => d.total_precip_mm || 0);
+
+    activeChartInstances.rainfallChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Total Precip (mm)',
+                data: rainVals,
+                backgroundColor: 'rgba(59, 130, 246, 0.6)',
+                borderColor: '#3B82F6',
+                borderWidth: 1,
+                borderRadius: 4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false }
+            },
+            scales: {
+                x: { ticks: { color: '#9CA3AF', font: { family: 'Inter', size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                y: { ticks: { color: '#9CA3AF', font: { family: 'Inter', size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
             }
         }
     });
@@ -684,21 +735,29 @@ function initEtlStudio() {
     if (extractForm) {
         extractForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const url = document.getElementById('extract-url').value.trim();
+            const citySelect = document.getElementById('extract-city-select') ? document.getElementById('extract-city-select').value : 'All 8 Cities';
+            const startDate = document.getElementById('extract-start-date') ? document.getElementById('extract-start-date').value : '2025-01-01';
+            const endDate = document.getElementById('extract-end-date') ? document.getElementById('extract-end-date').value : '2025-01-31';
             const format = document.getElementById('extract-format').value;
             const folder = document.getElementById('extract-folder').value.trim();
             const outputBox = document.getElementById('extract-output');
             const btn = document.getElementById('btn-run-extract');
 
             btn.disabled = true;
-            btn.innerHTML = '<div class="loading-spinner"></div> Extracting...';
-            outputBox.innerHTML = '<p class="loading-text">Downloading from API and writing dataset...</p>';
+            btn.innerHTML = '<div class="loading-spinner"></div> Extracting Multi-City Weather...';
+            outputBox.innerHTML = '<p class="loading-text">Downloading from Open-Meteo Archive API and writing dataset...</p>';
 
             try {
                 const res = await fetch('/api/etl/extract', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url, output_format: format, output_folder: folder })
+                    body: JSON.stringify({
+                        city_name: citySelect,
+                        start_date: startDate,
+                        end_date: endDate,
+                        output_format: format,
+                        output_folder: folder
+                    })
                 });
                 const data = await res.json();
                 outputBox.innerHTML = `
@@ -712,7 +771,7 @@ function initEtlStudio() {
                 outputBox.innerHTML = `<p style="color: var(--accent-red);">Extraction failed: ${err.message}</p>`;
             } finally {
                 btn.disabled = false;
-                btn.innerHTML = '<i data-lucide="play"></i> Run Extraction';
+                btn.innerHTML = '<i data-lucide="play"></i> Extract Weather Dataset';
                 if (window.lucide) lucide.createIcons();
             }
         });

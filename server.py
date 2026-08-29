@@ -39,14 +39,16 @@ class ChatRequest(BaseModel):
     message: str
 
 class ExtractRequest(BaseModel):
-    url: str = "https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code"
+    url: Optional[str] = "https://archive-api.open-meteo.com/v1/archive?start_date=2025-01-01&end_date=2025-01-31"
     output_format: str = "csv"
     output_folder: str = "data/extract"
-    city_name: Optional[str] = "Toronto"
+    city_name: Optional[str] = "All 8 Cities"
+    start_date: Optional[str] = "2025-01-01"
+    end_date: Optional[str] = "2025-01-31"
 
 class TransformRequest(BaseModel):
     input_file: str = "data/extract/weather_data.csv"
-    user_question: str = "Filter rows where rain_mm > 0 and add an is_rainy flag"
+    user_question: str = "Filter rows where is_rainy is true and calculate total precipitation by city"
     output_format: str = "csv"
     output_folder: str = "data/transform"
 
@@ -105,18 +107,18 @@ async def get_schema():
             ORDER BY ordinal_position;
         """)
         
-        # Get count
-        count_res = db.execute_query_structured(f"SELECT COUNT(*) AS count FROM public.{table};")
-        row_count = count_res["records"][0].get("count", 0) if count_res["records"] else 0
+        # Get row count
+        count_res = db.execute_query_structured(f"SELECT COUNT(*) AS total FROM public.{table};")
+        row_count = count_res["records"][0]["total"] if count_res["records"] else 0
 
-        # Get sample rows
-        sample_res = db.get_table_data(table, limit=5)
+        # Sample rows
+        sample_res = db.execute_query_structured(f"SELECT * FROM public.{table} LIMIT 3;")
 
         schema_data[table] = {
-            "columns": col_res.get("records", []),
+            "columns": col_res["records"],
             "row_count": row_count,
-            "sample_columns": sample_res.get("columns", []),
-            "sample_rows": sample_res.get("rows", [])
+            "sample_rows": sample_res["rows"],
+            "sample_columns": sample_res["columns"]
         }
 
     return JSONResponse(content={"tables": schema_data})
@@ -139,15 +141,24 @@ async def get_table_content(table_name: str, limit: int = 50):
 @app.post("/api/etl/extract")
 async def trigger_extract(request: ExtractRequest):
     """
-    Triggers an API extraction (e.g. Open-Meteo Weather) and saves the file.
+    Triggers an API extraction (e.g. Open-Meteo Weather for 8 cities or custom API) and saves the file.
     """
     etl = ETLTools()
-    msg = etl.extract_load(
-        url=request.url,
-        output_folder=request.output_folder,
-        format=request.output_format,
-        city_name=request.city_name
-    )
+    
+    if (request.city_name and "all" in request.city_name.lower()) or (request.url and ("all" in request.url.lower() or "8" in request.url.lower())):
+        msg = etl.extract_multi_city_weather(
+            start_date=request.start_date or "2025-01-01",
+            end_date=request.end_date or "2025-01-31",
+            output_folder=request.output_folder,
+            format=request.output_format
+        )
+    else:
+        msg = etl.extract_load(
+            url=request.url or "https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code",
+            output_folder=request.output_folder,
+            format=request.output_format,
+            city_name=request.city_name
+        )
     
     # Check if file was created
     expected_path = os.path.join(etl._resolve_path(request.output_folder), f"weather_data.{request.output_format.lower()}")

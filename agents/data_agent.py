@@ -198,89 +198,90 @@ def execute_agent_query(user_question: str) -> Dict[str, Any]:
     Executes the multi-agent workflow for a given question and returns
     rich metadata for the UI including reasoning steps, SQL, table data, and chart info.
     """
-    steps = [
-        {"step": "router", "title": "Classifying Intent", "status": "running"}
-    ]
+    import time
+    for attempt in range(2):
+        try:
+            response = data_agent.invoke(
+                {
+                    "messages": [HumanMessage(content=user_question)],
+                    "route_response": ""
+                }
+            )
 
-    try:
-        response = data_agent.invoke(
-            {
-                "messages": [HumanMessage(content=user_question)],
-                "route_response": ""
-            }
-        )
+            route = response.get("route_response", "sql")
+            final_answer = response.get("final_answer", "")
+            sql_state = response.get("sql_state") or {}
+            etl_state = response.get("etl_state") or {}
 
-        route = response.get("route_response", "sql")
-        final_answer = response.get("final_answer", "")
-        sql_state = response.get("sql_state") or {}
-        etl_state = response.get("etl_state") or {}
+            # Build timeline steps
+            timeline = [
+                {"step": "router", "title": "Intent Classification", "status": "completed", "detail": f"Routed to {route.upper()} Analyst"}
+            ]
 
-        # Build timeline steps
-        timeline = [
-            {"step": "router", "title": "Intent Classification", "status": "completed", "detail": f"Routed to {route.upper()} Analyst"}
-        ]
+            if route == "sql":
+                timeline.extend([
+                    {"step": "curate", "title": "Question Curation", "status": "completed", "detail": sql_state.get("curated_ques", "")},
+                    {"step": "generate_sql", "title": "SQL Generation", "status": "completed", "detail": sql_state.get("generated_sql_query", "")},
+                    {"step": "judge", "title": "Security Check (LLM as Judge)", "status": "completed", "detail": f"Status: {sql_state.get('is_safe', 'Unknown')} — {sql_state.get('comments', '')}"},
+                    {"step": "execute", "title": "Database Execution", "status": "completed", "detail": f"Returned {len(sql_state.get('data_rows', []))} rows"},
+                    {"step": "format", "title": "Answer Synthesis", "status": "completed", "detail": "Formatted final answer"}
+                ])
 
-        if route == "sql":
-            timeline.extend([
-                {"step": "curate", "title": "Question Curation", "status": "completed", "detail": sql_state.get("curated_ques", "")},
-                {"step": "generate_sql", "title": "SQL Generation", "status": "completed", "detail": sql_state.get("generated_sql_query", "")},
-                {"step": "judge", "title": "Security Check (LLM as Judge)", "status": "completed", "detail": f"Status: {sql_state.get('is_safe', 'Unknown')} — {sql_state.get('comments', '')}"},
-                {"step": "execute", "title": "Database Execution", "status": "completed", "detail": f"Returned {len(sql_state.get('data_rows', []))} rows"},
-                {"step": "format", "title": "Answer Synthesis", "status": "completed", "detail": "Formatted final answer"}
-            ])
+                columns = sql_state.get("data_columns", [])
+                records = sql_state.get("data_dicts", [])
+                chart_info = auto_detect_chart(columns, records)
 
-            columns = sql_state.get("data_columns", [])
-            records = sql_state.get("data_dicts", [])
-            chart_info = auto_detect_chart(columns, records)
+                return {
+                    "success": True,
+                    "route": "sql",
+                    "question": user_question,
+                    "answer": final_answer,
+                    "curated_question": sql_state.get("curated_ques", ""),
+                    "sql_query": sql_state.get("generated_sql_query", ""),
+                    "is_safe": sql_state.get("is_safe", "Yes"),
+                    "judge_comments": sql_state.get("comments", ""),
+                    "columns": columns,
+                    "rows": sql_state.get("data_rows", []),
+                    "records": records,
+                    "chart": chart_info,
+                    "timeline": timeline
+                }
 
+            else:  # ETL
+                timeline.extend([
+                    {"step": "etl_tools", "title": "ETL Tool Invocation", "status": "completed", "detail": "Processed API extract / transformation"}
+                ])
+
+                return {
+                    "success": True,
+                    "route": "etl",
+                    "question": user_question,
+                    "answer": final_answer,
+                    "etl_output": etl_state.get("result", ""),
+                    "timeline": timeline,
+                    "columns": [],
+                    "rows": [],
+                    "records": [],
+                    "chart": {"can_chart": False}
+                }
+
+        except Exception as e:
+            if attempt == 0 and ("connection" in str(e).lower() or "timeout" in str(e).lower() or "disconnected" in str(e).lower()):
+                time.sleep(1)
+                continue
             return {
-                "success": True,
-                "route": "sql",
+                "success": False,
+                "route": "unknown",
                 "question": user_question,
-                "answer": final_answer,
-                "curated_question": sql_state.get("curated_ques", ""),
-                "sql_query": sql_state.get("generated_sql_query", ""),
-                "is_safe": sql_state.get("is_safe", "Yes"),
-                "judge_comments": sql_state.get("comments", ""),
-                "columns": columns,
-                "rows": sql_state.get("data_rows", []),
-                "records": records,
-                "chart": chart_info,
-                "timeline": timeline
-            }
-
-        else:  # ETL
-            timeline.extend([
-                {"step": "etl_tools", "title": "ETL Tool Invocation", "status": "completed", "detail": "Processed API extract / transformation"}
-            ])
-
-            return {
-                "success": True,
-                "route": "etl",
-                "question": user_question,
-                "answer": final_answer,
-                "etl_output": etl_state.get("result", ""),
-                "timeline": timeline,
+                "answer": f"Agent encountered an error: {str(e)}",
+                "timeline": [
+                    {"step": "error", "title": "Error Occurred", "status": "failed", "detail": str(e)}
+                ],
                 "columns": [],
                 "rows": [],
                 "records": [],
                 "chart": {"can_chart": False}
             }
-
-    except Exception as e:
-        return {
-            "success": False,
-            "route": "unknown",
-            "question": user_question,
-            "answer": f"Agent encountered an error: {str(e)}",
-            "timeline": [
-                {"step": "error", "title": "Error Occurred", "status": "failed", "detail": str(e)}
-            ],
-            "columns": [],
-            "rows": [],
-            "records": [],
-            "chart": {"can_chart": False}
-        }
 
 
 if __name__ == "__main__":

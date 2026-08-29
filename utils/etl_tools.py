@@ -3,8 +3,24 @@ import io
 import sys
 import requests
 import pandas as pd
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from utils.database import DatabaseConnection
+
+# ============================================================
+# CENTRALIZED 8-CITY COORDINATE CONFIGURATION
+# Coordinates correspond to official city centers for OLA ride-hailing cities
+# ============================================================
+
+CITY_COORDINATES: Dict[str, Dict[str, Any]] = {
+    "Calgary": {"latitude": 51.0447, "longitude": -114.0719, "province": "AB"},
+    "Edmonton": {"latitude": 53.5461, "longitude": -113.4938, "province": "AB"},
+    "Halifax": {"latitude": 44.6488, "longitude": -63.5752, "province": "NS"},
+    "Montreal": {"latitude": 45.5017, "longitude": -73.5673, "province": "QC"},
+    "Ottawa": {"latitude": 45.4215, "longitude": -75.6972, "province": "ON"},
+    "Toronto": {"latitude": 43.6532, "longitude": -79.3832, "province": "ON"},
+    "Vancouver": {"latitude": 49.2827, "longitude": -123.1207, "province": "BC"},
+    "Winnipeg": {"latitude": 49.8951, "longitude": -97.1384, "province": "MB"},
+}
 
 
 class ETLTools:
@@ -17,6 +33,105 @@ class ETLTools:
             return folder_or_file
         return os.path.join(self.project_root, folder_or_file)
 
+    def extract_multi_city_weather(
+        self,
+        start_date: str = "2025-01-01",
+        end_date: str = "2025-01-31",
+        output_folder: str = "data/extract",
+        format: str = "csv"
+    ) -> str:
+        """
+        Extracts hourly historical weather data for all 8 ride-hailing cities from Open-Meteo Archive API
+        and consolidates them into a single dataset.
+        
+        Args:
+            start_date: Start date in YYYY-MM-DD format (default: 2025-01-01).
+            end_date: End date in YYYY-MM-DD format (default: 2025-01-31).
+            output_folder: Directory to save the extracted dataset.
+            format: 'csv', 'json', or 'parquet'.
+            
+        Returns:
+            str: Summary of extraction status and statistics.
+        """
+        resolved_folder = self._resolve_path(output_folder)
+        os.makedirs(resolved_folder, exist_ok=True)
+
+        headers = {"User-Agent": "OLA-AI-DataAgent/1.0"}
+        dfs = []
+        city_summaries = []
+
+        try:
+            for city, coords in CITY_COORDINATES.items():
+                lat = coords["latitude"]
+                lon = coords["longitude"]
+                url = (
+                    f"https://archive-api.open-meteo.com/v1/archive?"
+                    f"latitude={lat}&longitude={lon}&start_date={start_date}&end_date={end_date}&"
+                    f"hourly=temperature_2m,precipitation,rain,weather_code"
+                )
+
+                resp = requests.get(url, headers=headers, timeout=20)
+                resp.raise_for_status()
+                data = resp.json()
+
+                if "hourly" not in data or "time" not in data["hourly"]:
+                    continue
+
+                hourly = data["hourly"]
+                df = pd.DataFrame(hourly)
+                df.rename(columns={
+                    "time": "recorded_at",
+                    "temperature_2m": "temperature_c",
+                    "precipitation": "precipitation_mm",
+                    "rain": "rain_mm",
+                    "weather_code": "weather_code"
+                }, inplace=True)
+
+                df["latitude"] = lat
+                df["longitude"] = lon
+                df["city"] = city
+                df["is_rainy"] = (df["rain_mm"] > 0.0) | (df["precipitation_mm"] > 0.0)
+
+                dfs.append(df)
+                city_summaries.append(f"• {city}: {len(df)} hrs ({df['is_rainy'].sum()} rainy/precip hrs)")
+
+            if not dfs:
+                return "Error: No weather data could be extracted from Open-Meteo."
+
+            final_df = pd.concat(dfs, ignore_index=True)
+
+            # Standard column ordering
+            cols = [
+                "recorded_at", "city", "latitude", "longitude",
+                "temperature_c", "precipitation_mm", "rain_mm",
+                "weather_code", "is_rainy"
+            ]
+            final_df = final_df[cols]
+
+            fmt = format.lower()
+            filename = os.path.join(resolved_folder, f"weather_data.{fmt}")
+
+            if fmt == "csv":
+                final_df.to_csv(filename, index=False)
+            elif fmt == "json":
+                final_df.to_json(filename, orient="records", indent=2)
+            elif fmt == "parquet":
+                final_df.to_parquet(filename, index=False)
+            else:
+                return f"Error: Unsupported format '{format}'"
+
+            return (
+                f"Successfully extracted weather data for all 8 ride-hailing cities ({len(final_df)} total records).\n"
+                f"Saved to: {filename}\n"
+                f"Date Range: {start_date} to {end_date}\n\n"
+                f"City Breakdown:\n" + "\n".join(city_summaries)
+            )
+
+        except requests.exceptions.RequestException as e:
+            return f"API Network Error: {e}"
+        except Exception as e:
+            return f"Error during multi-city extraction: {e}"
+
     def extract_load(
         self,
         url: str,
@@ -25,20 +140,14 @@ class ETLTools:
         city_name: Optional[str] = None
     ) -> str:
         """
-        Extracts data from an external REST API (e.g., Open-Meteo Weather API or generic JSON endpoint)
-        and loads it into the desired location.
-        
-        Args:
-            url: The API URL endpoint.
-            output_folder: Directory to save the extracted file (default: data/extract).
-            format: 'csv', 'json', or 'parquet'.
-            city_name: Optional city tag for location-based weather datasets.
-            
-        Returns:
-            str: Summary of extraction status, record count, and output path.
+        Extracts data from an arbitrary API endpoint or single weather URL.
         """
         resolved_folder = self._resolve_path(output_folder)
         os.makedirs(resolved_folder, exist_ok=True)
+
+        # If user requests all cities or weather without specific coords, run multi-city extraction
+        if "all" in url.lower() or "8" in url.lower():
+            return self.extract_multi_city_weather(output_folder=output_folder, format=format)
 
         try:
             headers = {"User-Agent": "OLA-AI-DataAgent/1.0"}
@@ -46,12 +155,11 @@ class ETLTools:
             response.raise_for_status()
             data = response.json()
 
-            # 1. Specialized handling for Open-Meteo Weather API structure
+            # Specialized handling for Open-Meteo Weather API structure
             if isinstance(data, dict) and "hourly" in data and isinstance(data["hourly"], dict) and "time" in data["hourly"]:
                 hourly = data["hourly"]
                 df = pd.DataFrame(hourly)
 
-                # Rename columns for standard schema
                 rename_map = {
                     "time": "recorded_at",
                     "temperature_2m": "temperature_c",
@@ -61,45 +169,24 @@ class ETLTools:
                 }
                 df.rename(columns=rename_map, inplace=True)
 
-                # Add location metadata
                 lat = data.get("latitude")
                 lon = data.get("longitude")
                 df["latitude"] = lat
                 df["longitude"] = lon
 
-                # Derive city name if not provided
                 if not city_name:
+                    city_name = "Toronto"
                     if lat and lon:
-                        if 43.0 <= lat <= 44.5 and -80.5 <= lon <= -78.5:
-                            city_name = "Toronto"
-                        elif 45.0 <= lat <= 46.0 and -74.5 <= lon <= -73.0:
-                            city_name = "Montreal"
-                        elif 44.0 <= lat <= 45.5 and -64.5 <= lon <= -63.0:
-                            city_name = "Halifax"
-                        elif 45.0 <= lat <= 45.8 and -76.5 <= lon <= -75.0:
-                            city_name = "Ottawa"
-                        elif 12.8 <= lat <= 13.2 and 77.4 <= lon <= 77.8:
-                            city_name = "Bengaluru"
-                        else:
-                            city_name = f"Region ({lat:.2f}, {lon:.2f})"
-                    else:
-                        city_name = "Metro Region"
+                        for c_name, c_coords in CITY_COORDINATES.items():
+                            if abs(lat - c_coords["latitude"]) < 1.0 and abs(lon - c_coords["longitude"]) < 1.0:
+                                city_name = c_name
+                                break
 
                 df["city"] = city_name
-
-                # Ensure rain_mm / precipitation_mm exist
-                if "rain_mm" not in df.columns and "precipitation_mm" in df.columns:
-                    df["rain_mm"] = df["precipitation_mm"]
-                elif "precipitation_mm" not in df.columns and "rain_mm" in df.columns:
-                    df["precipitation_mm"] = df["rain_mm"]
-
-                # Boolean indicator for rain
-                rain_col = df["rain_mm"] if "rain_mm" in df.columns else df.get("precipitation_mm", 0)
-                df["is_rainy"] = rain_col > 0.0
-
+                df["is_rainy"] = (df.get("rain_mm", 0) > 0.0) | (df.get("precipitation_mm", 0) > 0.0)
                 base_filename = "weather_data"
 
-            # 2. Generic API normalization for other datasets
+            # Generic API normalization for other datasets
             elif isinstance(data, list):
                 df = pd.json_normalize(data)
                 base_filename = "extracted_data"
@@ -116,7 +203,6 @@ class ETLTools:
             else:
                 return f"Error: Unsupported JSON response structure: {type(data)}"
 
-            # Save in requested format
             fmt = format.lower()
             filename = os.path.join(resolved_folder, f"{base_filename}.{fmt}")
 
@@ -127,12 +213,12 @@ class ETLTools:
             elif fmt == "parquet":
                 df.to_parquet(filename, index=False)
             else:
-                return f"Error: Unsupported format '{format}'. Supported formats: csv, json, parquet."
+                return f"Error: Unsupported format '{format}'"
 
             return (
                 f"Successfully extracted {len(df)} records from API.\n"
                 f"Saved to: {filename}\n"
-                f"Columns: {', '.join(list(df.columns)[:8])}{'...' if len(df.columns) > 8 else ''}\n"
+                f"Columns: {', '.join(list(df.columns)[:8])}\n"
                 f"Date Range: {df['recorded_at'].min() if 'recorded_at' in df.columns else 'N/A'} to "
                 f"{df['recorded_at'].max() if 'recorded_at' in df.columns else 'N/A'}"
             )
@@ -163,7 +249,8 @@ class ETLTools:
 
             info_str = (
                 f"Columns: {list(df.columns)}\n"
-                f"Shape: {df.shape}\n\n"
+                f"Shape: {df.shape}\n"
+                f"Distinct Cities: {df['city'].unique().tolist() if 'city' in df.columns else 'N/A'}\n\n"
                 f"Top 3 Sample Rows:\n{df.head(3).to_string()}"
             )
             return info_str
@@ -177,7 +264,6 @@ class ETLTools:
         """
         captured_stdout = io.StringIO()
         old_stdout = sys.stdout
-
         local_vars = {"pd": pd, "os": os}
 
         try:
@@ -190,9 +276,9 @@ class ETLTools:
         finally:
             sys.stdout = old_stdout
 
-    def load_to_database(self, file_path: str, table_name: str = "weather_data") -> str:
+    def load_to_database(self, file_path: str = "data/extract/weather_data.csv", table_name: str = "weather_data") -> str:
         """
-        Loads an extracted/transformed CSV dataset directly into PostgreSQL.
+        Loads an extracted/transformed CSV dataset directly into PostgreSQL with duplicate prevention.
         """
         resolved_path = self._resolve_path(file_path)
         if not os.path.exists(resolved_path):
@@ -264,6 +350,7 @@ class ETLTools:
                 "records": preview_df.to_dict(orient="records"),
                 "total_rows": len(df),
                 "shape": df.shape,
+                "cities": df["city"].unique().tolist() if "city" in df.columns else [],
                 "error": None
             }
         except Exception as e:
@@ -271,12 +358,7 @@ class ETLTools:
 
 
 if __name__ == "__main__":
-    obj = ETLTools()
-    print("Testing Open-Meteo extraction...")
-    res = obj.extract_load(
-        url="https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code",
-        output_folder="data/extract",
-        format="csv",
-        city_name="Toronto"
-    )
+    tools = ETLTools()
+    print("Testing 8-City Weather Extraction...")
+    res = tools.extract_multi_city_weather()
     print(res)

@@ -80,7 +80,11 @@ def validate_sql_deterministic(raw_sql: str) -> Tuple[bool, str, str]:
             match = re.search(pattern, sql, flags=re.IGNORECASE).group(0)
             return False, "", f"Disallowed SQL operation detected: {match.upper()}"
 
-    # 8. Check for chained statements / multiple semicolons outside single quotes
+    # 8. Check for placeholder ellipsis (...)
+    if "..." in sql:
+        return False, "", "Incomplete SQL query containing ellipsis '...' detected."
+
+    # 9. Check for chained statements / multiple semicolons outside single quotes
     cleaned_body = sql.rstrip(";").strip()
     semicolon_outside_quotes = False
     in_single_quotes = False
@@ -143,9 +147,8 @@ You are a question-curation assistant for an SQL data analyst in an OLA-inspired
 Rewrite the user's question into a clear, precise analytical question for querying a PostgreSQL database containing rides, drivers, vehicles, payments, ratings, and weather data.
 
 Do not answer the question.
-Do not generate SQL.
-
-Return only the curated question text.
+Do not write SQL.
+Return ONLY the refined, standalone question.
 
 User Question:
 {user_question}
@@ -181,20 +184,21 @@ DATABASE SCHEMA:
 {schema_info}
 
 TABLES & RELATIONSHIPS OVERVIEW:
-- users: user_id, first_name, last_name, email, phone, city, user_type ('rider', 'driver'), signup_date, is_active.
+- users: user_id, first_name, last_name, email, phone, city (Calgary, Edmonton, Halifax, Montreal, Ottawa, Toronto, Vancouver, Winnipeg), user_type ('rider', 'driver'), signup_date, is_active.
 - vehicles: vehicle_id, driver_id, vehicle_type, make, model, year, license_plate.
-- rides: ride_id, rider_id, driver_id, vehicle_id, pickup_lat, pickup_lon, dropoff_lat, dropoff_lon, requested_at, pickup_time, dropoff_time, fare, distance_km, duration_min, surge_multiplier, status ('completed', 'cancelled', 'in_progress'), cancellation_reason.
-  * To get city for a ride, JOIN users ON rides.rider_id = users.user_id
-- payments: payment_id, ride_id, amount, payment_method ('card', 'cash', 'upi', 'wallet'), payment_status ('completed', 'successful', 'failed', 'refunded'), transaction_id.
-- ratings: rating_id, ride_id, rider_id, driver_id, rating (1-5), comment, created_at.
-- weather_data: weather_id, recorded_at (timestamp), city, latitude, longitude, temperature_c, precipitation_mm, rain_mm, weather_code, is_rainy (boolean).
+- rides: ride_id, rider_id, driver_id, vehicle_id, pickup_latitude, pickup_longitude, dropoff_latitude, dropoff_longitude, requested_at, pickup_time, dropoff_time, fare, distance_km, surge_multiplier, status ('completed', 'cancelled', 'in_progress'), cancellation_reason.
+  * NOTE: rides does NOT have a direct 'city' column. To get the city for a ride, JOIN users ON rides.rider_id = users.user_id.
+- payments: payment_id, ride_id, user_id, amount, payment_method ('card', 'cash', 'upi', 'wallet'), payment_status ('completed', 'successful', 'failed', 'refunded'), transaction_id.
+- ratings: rating_id, ride_id, rider_id, driver_id, rating (1-5), comment, rated_at.
+- weather_data: weather_id, recorded_at (timestamp), city (Calgary, Edmonton, Halifax, Montreal, Ottawa, Toronto, Vancouver, Winnipeg), latitude, longitude, temperature_c, precipitation_mm, rain_mm, weather_code, is_rainy (boolean).
+  * Temporal Coverage: Hourly observations for January 2025 (2025-01-01 to 2025-01-31) across all 8 cities (5,952 total records).
   * NOTE: There is NO 'timezone' or 'wind_speed' column.
 
 RULES FOR OUTPUT FORMAT:
 Return ONLY a valid JSON object matching this structure:
 {{
   "can_be_answered": true,
-  "sql_query": "SELECT ...;",
+  "sql_query": "SELECT u.city, COUNT(*) FROM public.rides r JOIN public.users u ON r.rider_id = u.user_id GROUP BY u.city;",
   "explanation": ""
 }}
 
@@ -205,14 +209,17 @@ CRITICAL SCHEMA LIMITATION RULES:
    - Set "explanation": "Provide a clear, helpful statement explaining what columns/information exist and that the requested attribute (e.g. timezone) is not available in the database schema."
    - NEVER hallucinate or invent non-existent column names or tables!
 2. If "can_be_answered": true:
-   - "sql_query" MUST contain ONLY the single executable PostgreSQL statement (SELECT or WITH).
+   - "sql_query" MUST contain ONLY the full, single executable PostgreSQL statement (SELECT or WITH).
+   - NEVER use ellipsis '...' in sql_query. Write the full query explicitly.
    - Do NOT include markdown code fences, comments, thoughts, or conversational text in "sql_query".
    - Use appropriate JOINs between tables.
-   - For correlation between rides and weather, join on hourly timestamp: `JOIN public.weather_data w ON DATE_TRUNC('hour', rides.requested_at) = w.recorded_at` or date: `rides.requested_at::date = w.recorded_at::date`.
-   - When comparing coverage between weather_data and rides: aggregate min/max timestamps, distinct cities, and record counts from both tables (e.g. using UNION ALL).
+   - For correlation between rides and weather, join via users and hourly timestamp:
+     `JOIN public.users u ON rides.rider_id = u.user_id JOIN public.weather_data w ON u.city = w.city AND DATE_TRUNC('hour', rides.requested_at) = w.recorded_at`
+     (or date match: `u.city = w.city AND rides.requested_at::date = w.recorded_at::date`).
+   - When comparing coverage between weather_data and rides: aggregate min/max timestamps, distinct cities, and record counts from both tables.
    - RESULT LIMITING RULES (Context-Aware):
-     * If the user specifically asks for top/bottom/first N rows (e.g., 'top 5', 'first 10'), add LIMIT N.
-     * For group-by aggregations (e.g., by date, by status, by city, by payment method, coverage comparisons), do NOT arbitrarily add LIMIT 10 so the full aggregated dataset is available.
+     * If the user specifically asks for top/bottom/first N rows (e.g., 'top 5', 'first 10', 'city with highest rainfall'), add LIMIT N.
+     * For group-by aggregations (e.g., by date, by status, by city across all 8 cities, by payment method, coverage comparisons), do NOT arbitrarily add LIMIT 10 so the full aggregated dataset is available.
      * For large raw table dumps without aggregation (e.g., SELECT * FROM rides), apply a reasonable LIMIT 50.
    - For text comparisons, use case-insensitive matching with ILIKE.
    - Set "explanation": ""
@@ -232,39 +239,38 @@ USER QUESTION:
 def generate_sql(state: AgentSchema) -> AgentSchema:
     prompt = state.Prompt_query_context
 
-    # Try medium tier LLM (Groq) first
-    try:
-        llm = pick_llm("medium")
-        response = llm.invoke(prompt)
-        raw_text = get_message_text(response)
-        data = extract_json(raw_text)
-        validated = SQLGenerationSchema.model_validate(data)
-
-        state.can_be_answered = validated.can_be_answered
-        state.schema_explanation = validated.explanation or ""
-        state.generated_sql_query = validated.sql_query or ""
-        return state
-
-    except Exception:
-        # Fallback to high tier LLM (Groq openai/gpt-oss-120b)
+    for tier in ["medium", "high"]:
         try:
-            high_llm = pick_llm("high")
-            response = high_llm.invoke(prompt)
+            llm = pick_llm(tier)
+            response = llm.invoke(prompt)
             raw_text = get_message_text(response)
             data = extract_json(raw_text)
             validated = SQLGenerationSchema.model_validate(data)
 
-            state.can_be_answered = validated.can_be_answered
-            state.schema_explanation = validated.explanation or ""
-            state.generated_sql_query = validated.sql_query or ""
-            return state
+            if validated.can_be_answered and validated.sql_query:
+                query_str = validated.sql_query.strip()
+                if "..." in query_str:
+                    raise ValueError("Generated query contains ellipsis '...'")
+                valid, clean_sql, err = validate_sql_deterministic(query_str)
+                if not valid:
+                    raise ValueError(f"Deterministic validation failed: {err}")
+                state.can_be_answered = True
+                state.schema_explanation = ""
+                state.generated_sql_query = clean_sql
+                return state
+            else:
+                state.can_be_answered = False
+                state.schema_explanation = validated.explanation or ""
+                state.generated_sql_query = ""
+                return state
 
-        except Exception as e2:
-            state.can_be_answered = False
-            state.schema_explanation = f"Could not generate a structured query for this request: {e2}"
-            state.generated_sql_query = ""
-            state.error = str(e2)
-            return state
+        except Exception as e:
+            if tier == "high":
+                state.can_be_answered = False
+                state.schema_explanation = f"Could not generate a structured query for this request: {e}"
+                state.generated_sql_query = ""
+                state.error = str(e)
+                return state
 
 
 # ============================================================
@@ -438,11 +444,11 @@ Your task is to present this data in a clear, well-structured, natural language 
 - Highlight key insights directly with exact numbers from the data.
 - For geographic and temporal coverage questions:
   * State the exact date ranges and distinct cities for weather_data and rides from the query result.
-  * Base overlap conclusions STRICTLY on the returned data. If weather data is available only for January 2025 in Toronto Metro while rides span 2025-2026 across multiple cities, explain that overlap exists ONLY for Toronto in January 2025, and is not available for other cities or dates. Do not invent or assume matches.
-- When presenting weather vs ride metrics, express results in terms of **observed correlations** (e.g., "The data indicates that during rainy periods..."). Avoid claiming direct causality.
-- Format multi-row results neatly with bullet points or summary tables.
+  * Base overlap conclusions STRICTLY on the returned data: weather data is available for January 2025 across all 8 cities (Calgary, Edmonton, Halifax, Montreal, Ottawa, Toronto, Vancouver, Winnipeg). The rides dataset spans January 2025 to July 2026 across all 8 cities. Explain that meaningful ride/weather joins can be performed across all 8 cities for the January 2025 observation window.
+- STRICT NON-CAUSAL LANGUAGE: Express results in terms of **observed associations and correlations** (e.g., "The data shows an association between rainy hours and...", "During rainy periods in January 2025, average cancellation rate was X% compared to Y% in dry periods"). NEVER state that rain *causes* surge pricing or cancellations.
+- Format multi-row results neatly with markdown tables or bullet points.
 
-Provide a concise and helpful answer:
+Provide a concise, professional, and helpful answer:
 """
 
     response = llm.invoke(prompt)
