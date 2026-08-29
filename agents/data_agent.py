@@ -12,44 +12,46 @@ sys.path.append(
     )
 )
 
-from utils.llm_pick import pick_llm
+from utils.llm_pick import pick_llm, get_message_text
 from model.schema import RouterSchema, DataAgentSchema
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
 from agents.etl_analyst import etl_analyst
 from agents.sql_analyst import sql_analyst
 
-llm = pick_llm("gemini")
-llm_router = llm.with_structured_output(RouterSchema)
+llm_router = pick_llm("low").with_structured_output(RouterSchema, method="json_mode")
 
 
 # ----------------------- DATA AGENT NODES -----------------------
 
 def router_node(state: DataAgentSchema) -> DataAgentSchema:
-    messages = state.messages[-1].content
-    route_response_dict = llm_router.invoke(
-        f"""Classify whether this query requires querying an SQL database or running an ETL task (API extraction / file transformation):
+    messages = get_message_text(state.messages[-1])
+    try:
+        route_response_dict = llm_router.invoke(
+            f"""Classify whether this query requires querying an SQL database or running an ETL task (API extraction / file transformation):
 Query: {messages}
 Return 'sql' for database questions/analytics, or 'etl' for API extraction/data transformations."""
-    )
-    state.route_response = route_response_dict.answer
+        )
+        state.route_response = route_response_dict.answer
+    except Exception:
+        # Fallback: rule-based / groq fallback on transient network disconnect
+        lower_q = messages.lower()
+        if any(k in lower_q for k in ["extract", "transform", "fetch api", "http://", "https://", "load to database", "save to data/"]):
+            state.route_response = "etl"
+        else:
+            state.route_response = "sql"
     return state
 
 
 def etl_node(state: DataAgentSchema) -> DataAgentSchema:
-    messages = state.messages[-1].content
+    messages = get_message_text(state.messages[-1])
     response = etl_analyst.invoke(
         {
             "messages": [HumanMessage(content=messages)]
         }
     )
     last_msg = response["messages"][-1]
-    final_content = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
-
-    if isinstance(final_content, list):
-        final_text = "".join(item.get("text", "") for item in final_content if isinstance(item, dict))
-    else:
-        final_text = str(final_content)
+    final_text = get_message_text(last_msg)
 
     state.final_answer = final_text
     state.etl_state = {"raw_messages": [str(m) for m in response.get("messages", [])], "result": final_text}
@@ -58,7 +60,7 @@ def etl_node(state: DataAgentSchema) -> DataAgentSchema:
 
 
 def sql_node(state: DataAgentSchema) -> DataAgentSchema:
-    message = state.messages[-1].content
+    message = get_message_text(state.messages[-1])
     input_schema = {
         "messages": [],
         "user_question": message,

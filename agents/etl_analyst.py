@@ -12,7 +12,7 @@ sys.path.append(
     )
 )
 
-from utils.llm_pick import pick_llm
+from utils.llm_pick import pick_llm, get_message_text
 from utils.etl_tools import ETLTools
 from model.schema import EtlAgentSchema
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
@@ -75,13 +75,7 @@ Dataset Context:
 """
 
     response = llm.invoke(prompt)
-
-    if isinstance(response.content, str):
-        pandas_code = response.content
-    else:
-        pandas_code = "".join(
-            block.get("text", "") for block in response.content if isinstance(block, dict)
-        )
+    pandas_code = get_message_text(response)
 
     pandas_code = pandas_code.strip()
     pandas_code = re.sub(r"^```(?:python)?\s*", "", pandas_code, flags=re.IGNORECASE)

@@ -10,7 +10,7 @@ sys.path.append(
     )
 )
 
-from utils.llm_pick import pick_llm
+from utils.llm_pick import pick_llm, get_message_text
 from utils.database import DatabaseConnection
 from model.schema import AgentSchema, JudgeSchema, SQLGenerationSchema
 from langchain_core.messages import HumanMessage, AIMessage
@@ -103,8 +103,11 @@ def validate_sql_deterministic(raw_sql: str) -> Tuple[bool, str, str]:
 # HELPER: EXTRACT JSON
 # ============================================================
 
-def extract_json(text: str) -> dict:
-    text = text.strip()
+def extract_json(raw_input: Any) -> dict:
+    """
+    Safely parses JSON dictionary from string or list content.
+    """
+    text = get_message_text(raw_input)
     if "<think>" in text and "</think>" in text:
         text = text.split("</think>", 1)[1].strip()
 
@@ -149,7 +152,7 @@ User Question:
 """
 
     response = llm.invoke(prompt)
-    curated_question = response.content.strip()
+    curated_question = get_message_text(response)
 
     if "<think>" in curated_question:
         curated_question = curated_question.split("</think>")[-1].strip()
@@ -177,13 +180,15 @@ Your task is to analyze the user question against the provided database schema a
 DATABASE SCHEMA:
 {schema_info}
 
-TABLES OVERVIEW:
+TABLES & RELATIONSHIPS OVERVIEW:
 - users: user_id, first_name, last_name, email, phone, city, user_type ('rider', 'driver'), signup_date, is_active.
 - vehicles: vehicle_id, driver_id, vehicle_type, make, model, year, license_plate.
 - rides: ride_id, rider_id, driver_id, vehicle_id, pickup_lat, pickup_lon, dropoff_lat, dropoff_lon, requested_at, pickup_time, dropoff_time, fare, distance_km, duration_min, surge_multiplier, status ('completed', 'cancelled', 'in_progress'), cancellation_reason.
+  * To get city for a ride, JOIN users ON rides.rider_id = users.user_id
 - payments: payment_id, ride_id, amount, payment_method ('card', 'cash', 'upi', 'wallet'), payment_status ('completed', 'successful', 'failed', 'refunded'), transaction_id.
 - ratings: rating_id, ride_id, rider_id, driver_id, rating (1-5), comment, created_at.
-- weather_data: weather_id, recorded_at (timestamp), city, latitude, longitude, temperature_c, precipitation_mm, rain_mm, weather_code, is_rainy (boolean). (NOTE: There is NO 'timezone' or 'wind_speed' column).
+- weather_data: weather_id, recorded_at (timestamp), city, latitude, longitude, temperature_c, precipitation_mm, rain_mm, weather_code, is_rainy (boolean).
+  * NOTE: There is NO 'timezone' or 'wind_speed' column.
 
 RULES FOR OUTPUT FORMAT:
 Return ONLY a valid JSON object matching this structure:
@@ -204,7 +209,11 @@ CRITICAL SCHEMA LIMITATION RULES:
    - Do NOT include markdown code fences, comments, thoughts, or conversational text in "sql_query".
    - Use appropriate JOINs between tables.
    - For correlation between rides and weather, join on hourly timestamp: `JOIN public.weather_data w ON DATE_TRUNC('hour', rides.requested_at) = w.recorded_at` or date: `rides.requested_at::date = w.recorded_at::date`.
-   - If user does not specify row count, limit to 10 rows.
+   - When comparing coverage between weather_data and rides: aggregate min/max timestamps, distinct cities, and record counts from both tables (e.g. using UNION ALL).
+   - RESULT LIMITING RULES (Context-Aware):
+     * If the user specifically asks for top/bottom/first N rows (e.g., 'top 5', 'first 10'), add LIMIT N.
+     * For group-by aggregations (e.g., by date, by status, by city, by payment method, coverage comparisons), do NOT arbitrarily add LIMIT 10 so the full aggregated dataset is available.
+     * For large raw table dumps without aggregation (e.g., SELECT * FROM rides), apply a reasonable LIMIT 50.
    - For text comparisons, use case-insensitive matching with ILIKE.
    - Set "explanation": ""
 
@@ -222,37 +231,40 @@ USER QUESTION:
 
 def generate_sql(state: AgentSchema) -> AgentSchema:
     prompt = state.Prompt_query_context
-    llm = pick_llm("medium")
 
+    # Try medium tier LLM (Groq) first
     try:
+        llm = pick_llm("medium")
         response = llm.invoke(prompt)
-        raw_text = response.content.strip()
+        raw_text = get_message_text(response)
         data = extract_json(raw_text)
         validated = SQLGenerationSchema.model_validate(data)
 
         state.can_be_answered = validated.can_be_answered
         state.schema_explanation = validated.explanation or ""
         state.generated_sql_query = validated.sql_query or ""
+        return state
 
-    except Exception as e:
-        # Fallback: attempt structured invocation with Gemini if medium LLM output malformed JSON
+    except Exception:
+        # Fallback to high tier LLM (Groq openai/gpt-oss-120b)
         try:
-            gemini_llm = pick_llm("gemini")
-            response = gemini_llm.invoke(prompt)
-            raw_text = response.content.strip()
+            high_llm = pick_llm("high")
+            response = high_llm.invoke(prompt)
+            raw_text = get_message_text(response)
             data = extract_json(raw_text)
             validated = SQLGenerationSchema.model_validate(data)
 
             state.can_be_answered = validated.can_be_answered
             state.schema_explanation = validated.explanation or ""
             state.generated_sql_query = validated.sql_query or ""
+            return state
+
         except Exception as e2:
             state.can_be_answered = False
             state.schema_explanation = f"Could not generate a structured query for this request: {e2}"
             state.generated_sql_query = ""
             state.error = str(e2)
-
-    return state
+            return state
 
 
 # ============================================================
@@ -343,7 +355,8 @@ SQL QUERY:
 
     try:
         response = llm.invoke(prompt)
-        data = extract_json(response.content)
+        raw_text = get_message_text(response)
+        data = extract_json(raw_text)
         result = JudgeSchema.model_validate(data)
         state.is_safe = result.answer
         state.comments = result.comments
@@ -423,6 +436,9 @@ Database returned: {execution_result}
 
 Your task is to present this data in a clear, well-structured, natural language response.
 - Highlight key insights directly with exact numbers from the data.
+- For geographic and temporal coverage questions:
+  * State the exact date ranges and distinct cities for weather_data and rides from the query result.
+  * Base overlap conclusions STRICTLY on the returned data. If weather data is available only for January 2025 in Toronto Metro while rides span 2025-2026 across multiple cities, explain that overlap exists ONLY for Toronto in January 2025, and is not available for other cities or dates. Do not invent or assume matches.
 - When presenting weather vs ride metrics, express results in terms of **observed correlations** (e.g., "The data indicates that during rainy periods..."). Avoid claiming direct causality.
 - Format multi-row results neatly with bullet points or summary tables.
 
@@ -430,7 +446,7 @@ Provide a concise and helpful answer:
 """
 
     response = llm.invoke(prompt)
-    final_answer = response.content.strip()
+    final_answer = get_message_text(response)
 
     if "<think>" in final_answer:
         final_answer = final_answer.split("</think>")[-1].strip()
