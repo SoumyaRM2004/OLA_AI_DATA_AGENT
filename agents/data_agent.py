@@ -64,6 +64,8 @@ def sql_node(state: DataAgentSchema) -> DataAgentSchema:
         "user_question": message,
         "curated_ques": "",
         "Prompt_query_context": "",
+        "can_be_answered": True,
+        "schema_explanation": "",
         "generated_sql_query": "",
         "is_safe": "No",
         "comments": "",
@@ -79,6 +81,8 @@ def sql_node(state: DataAgentSchema) -> DataAgentSchema:
 
     state.sql_state = {
         "curated_ques": response.get("curated_ques", ""),
+        "can_be_answered": response.get("can_be_answered", True),
+        "schema_explanation": response.get("schema_explanation", ""),
         "generated_sql_query": response.get("generated_sql_query", ""),
         "is_safe": response.get("is_safe", "No"),
         "comments": response.get("comments", ""),

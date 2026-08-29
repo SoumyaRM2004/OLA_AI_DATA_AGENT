@@ -2,7 +2,7 @@ import os
 import sys
 import json
 import re
-from typing import Dict, Any
+from typing import Dict, Any, Tuple, Optional
 
 sys.path.append(
     os.path.abspath(
@@ -12,9 +12,118 @@ sys.path.append(
 
 from utils.llm_pick import pick_llm
 from utils.database import DatabaseConnection
-from model.schema import AgentSchema, JudgeSchema
+from model.schema import AgentSchema, JudgeSchema, SQLGenerationSchema
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
+
+
+# ============================================================
+# DETERMINISTIC SQL VALIDATOR
+# ============================================================
+
+DISALLOWED_KEYWORDS = [
+    r"\bINSERT\b", r"\bUPDATE\b", r"\bDELETE\b", r"\bDROP\b",
+    r"\bALTER\b", r"\bTRUNCATE\b", r"\bCREATE\b", r"\bGRANT\b",
+    r"\bREVOKE\b", r"\bEXECUTE\b", r"\bEXEC\b", r"\bCOPY\b",
+    r"\bVACUUM\b", r"\bREINDEX\b"
+]
+
+def validate_sql_deterministic(raw_sql: str) -> Tuple[bool, str, str]:
+    """
+    Deterministically validates a generated SQL query before sending to Security Judge or PostgreSQL.
+    
+    Returns:
+        (is_valid: bool, clean_sql: str, error_message: str)
+    """
+    if not raw_sql or not isinstance(raw_sql, str):
+        return False, "", "SQL query is empty or not a valid string."
+
+    sql = raw_sql.strip()
+
+    # 1. Reject obvious markdown fences
+    if "```" in sql:
+        return False, "", "SQL contains markdown code fences."
+
+    # 2. Reject reasoning tokens
+    if "<think>" in sql.lower() or "</think>" in sql.lower():
+        return False, "", "SQL contains reasoning or thought tokens."
+
+    # 3. Reject backticks (PostgreSQL uses standard quotes or double quotes, not MySQL backticks)
+    if "`" in sql:
+        return False, "", "SQL contains invalid backtick identifier characters (`)."
+
+    # 4. Reject conversational punctuation (question marks or exclamation marks outside string literals)
+    in_str = False
+    for ch in sql:
+        if ch == "'":
+            in_str = not in_str
+        elif ch in ["?", "!"] and not in_str:
+            return False, "", f"SQL contains invalid conversational punctuation ('{ch}')."
+
+    # 5. Reject conversational or explanatory phrasing
+    conversational_patterns = [
+        r"\bhere is\b", r"\blet me\b", r"\blet us\b", r"\bwait,\b",
+        r"\bmaybe\b", r"\bno,\b", r"\bi will\b", r"\byou can\b",
+        r"\bexplanation:\b", r"\bnote:\b", r"\bthe query is\b"
+    ]
+    for cp in conversational_patterns:
+        if re.search(cp, sql, flags=re.IGNORECASE):
+            return False, "", "SQL contains conversational or explanatory text."
+
+    # 6. Ensure statement starts strictly with SELECT or WITH
+    if not re.match(r"^\s*(SELECT|WITH)\b", sql, flags=re.IGNORECASE):
+        return False, "", "SQL query must strictly begin with SELECT or WITH."
+
+    # 7. Reject mutating/dangerous SQL keywords
+    for pattern in DISALLOWED_KEYWORDS:
+        if re.search(pattern, sql, flags=re.IGNORECASE):
+            match = re.search(pattern, sql, flags=re.IGNORECASE).group(0)
+            return False, "", f"Disallowed SQL operation detected: {match.upper()}"
+
+    # 8. Check for chained statements / multiple semicolons outside single quotes
+    cleaned_body = sql.rstrip(";").strip()
+    semicolon_outside_quotes = False
+    in_single_quotes = False
+    for char in cleaned_body:
+        if char == "'":
+            in_single_quotes = not in_single_quotes
+        elif char == ";" and not in_single_quotes:
+            semicolon_outside_quotes = True
+            break
+            
+    if semicolon_outside_quotes:
+        return False, "", "Multiple SQL statements detected (chained queries not allowed)."
+
+    # Clean, single-statement SQL with terminating semicolon
+    final_sql = cleaned_body + ";"
+    return True, final_sql, ""
+
+
+# ============================================================
+# HELPER: EXTRACT JSON
+# ============================================================
+
+def extract_json(text: str) -> dict:
+    text = text.strip()
+    if "<think>" in text and "</think>" in text:
+        text = text.split("</think>", 1)[1].strip()
+
+    text = re.sub(r"^```json\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text).strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Could not parse valid JSON from output: {text[:200]}")
 
 
 # ============================================================
@@ -28,13 +137,12 @@ def curate_ques(state: AgentSchema) -> AgentSchema:
     prompt = f"""
 You are a question-curation assistant for an SQL data analyst in an OLA-inspired mobility platform.
 
-Rewrite the user's question into a clear, precise, and unambiguous analytical question
-that can be answered using an SQL database containing rides, drivers, vehicles, payments, ratings, and weather data.
+Rewrite the user's question into a clear, precise analytical question for querying a PostgreSQL database containing rides, drivers, vehicles, payments, ratings, and weather data.
 
 Do not answer the question.
 Do not generate SQL.
 
-Return only the curated question.
+Return only the curated question text.
 
 User Question:
 {user_question}
@@ -43,7 +151,6 @@ User Question:
     response = llm.invoke(prompt)
     curated_question = response.content.strip()
 
-    # Clean any reasoning tokens if present
     if "<think>" in curated_question:
         curated_question = curated_question.split("</think>")[-1].strip()
 
@@ -63,44 +170,43 @@ def prompt_query_context(state: AgentSchema) -> AgentSchema:
     schema_info = db.schema_details("public")
 
     prompt = f"""
-You are an expert SQL Data Analyst Agent for an OLA-inspired mobility and ride-hailing data platform.
+You are an expert SQL Data Analyst Agent for a PostgreSQL database in an OLA-inspired mobility platform.
 
-Your task is to convert the user's natural-language question
-into a valid PostgreSQL SQL query based strictly on the provided schema.
+Your task is to analyze the user question against the provided database schema and determine if it can be answered.
 
 DATABASE SCHEMA:
 {schema_info}
 
 TABLES OVERVIEW:
-- users: rider and driver profiles, city, signup date, active status.
-- vehicles: driver vehicle details, make, model, year, license plate.
-- rides: ride details (requested_at, pickup_time, dropoff_time, fare, distance_km, surge_multiplier, status, cancellation_reason).
-- payments: payment method, amount, payment status, transaction id.
-- ratings: trip ratings (1-5), comments.
-- weather_data: hourly external weather recordings (recorded_at, city, temperature_c, precipitation_mm, rain_mm, is_rainy, weather_code).
+- users: user_id, first_name, last_name, email, phone, city, user_type ('rider', 'driver'), signup_date, is_active.
+- vehicles: vehicle_id, driver_id, vehicle_type, make, model, year, license_plate.
+- rides: ride_id, rider_id, driver_id, vehicle_id, pickup_lat, pickup_lon, dropoff_lat, dropoff_lon, requested_at, pickup_time, dropoff_time, fare, distance_km, duration_min, surge_multiplier, status ('completed', 'cancelled', 'in_progress'), cancellation_reason.
+- payments: payment_id, ride_id, amount, payment_method ('card', 'cash', 'upi', 'wallet'), payment_status ('completed', 'successful', 'failed', 'refunded'), transaction_id.
+- ratings: rating_id, ride_id, rider_id, driver_id, rating (1-5), comment, created_at.
+- weather_data: weather_id, recorded_at (timestamp), city, latitude, longitude, temperature_c, precipitation_mm, rain_mm, weather_code, is_rainy (boolean). (NOTE: There is NO 'timezone' or 'wind_speed' column).
 
-WEATHER & RIDE JOIN GUIDELINES:
-- To correlate rides with weather, join on hourly timestamp:
-  JOIN public.weather_data w ON DATE_TRUNC('hour', rides.requested_at) = w.recorded_at
-  OR on date: rides.requested_at::date = w.recorded_at::date
-- For cancellation correlation: calculate total rides, cancelled rides, and cancellation percentage:
-  ROUND((SUM(CASE WHEN rides.status = 'cancelled' THEN 1 ELSE 0 END)::numeric / NULLIF(COUNT(rides.ride_id), 0)) * 100, 2) AS cancellation_rate_pct
-- For surge multiplier correlation: compute AVG(rides.surge_multiplier) grouped by w.is_rainy or weather condition.
+RULES FOR OUTPUT FORMAT:
+Return ONLY a valid JSON object matching this structure:
+{{
+  "can_be_answered": true,
+  "sql_query": "SELECT ...;",
+  "explanation": ""
+}}
 
-IMPORTANT RULES:
-1. Generate valid PostgreSQL SQL.
-2. Use ONLY tables and columns that exist in the schema.
-3. Do NOT invent table names or column names.
-4. Use appropriate JOINs between tables.
-5. If the user does not specify the number of rows, limit the result to 10 rows.
-6. Generate ONLY read-only SQL (SELECT or WITH).
-7. Do NOT generate: INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, GRANT, REVOKE.
-8. For text comparisons, use case-insensitive matching with ILIKE unless exact case is specified.
-9. Ensure column aliases are clean and readable for user display (e.g., AS total_rides, AS avg_fare, AS cancellation_rate_pct).
-
-IMPORTANT OUTPUT RULE:
-- Return ONLY the final executable PostgreSQL SQL statement.
-- Do NOT output explanations, comments, or markdown ticks.
+CRITICAL SCHEMA LIMITATION RULES:
+1. Examine the schema carefully. If the user asks for attributes, metrics, or columns that DO NOT EXIST in the schema (e.g. timezone, user age, driver salary, wind speed):
+   - Set "can_be_answered": false
+   - Set "sql_query": ""
+   - Set "explanation": "Provide a clear, helpful statement explaining what columns/information exist and that the requested attribute (e.g. timezone) is not available in the database schema."
+   - NEVER hallucinate or invent non-existent column names or tables!
+2. If "can_be_answered": true:
+   - "sql_query" MUST contain ONLY the single executable PostgreSQL statement (SELECT or WITH).
+   - Do NOT include markdown code fences, comments, thoughts, or conversational text in "sql_query".
+   - Use appropriate JOINs between tables.
+   - For correlation between rides and weather, join on hourly timestamp: `JOIN public.weather_data w ON DATE_TRUNC('hour', rides.requested_at) = w.recorded_at` or date: `rides.requested_at::date = w.recorded_at::date`.
+   - If user does not specify row count, limit to 10 rows.
+   - For text comparisons, use case-insensitive matching with ILIKE.
+   - Set "explanation": ""
 
 USER QUESTION:
 {curated_question}
@@ -111,78 +217,100 @@ USER QUESTION:
 
 
 # ============================================================
-# 3. GENERATE SQL
+# 3. GENERATE STRUCTURED SQL
 # ============================================================
 
 def generate_sql(state: AgentSchema) -> AgentSchema:
     prompt = state.Prompt_query_context
     llm = pick_llm("medium")
-    response = llm.invoke(prompt)
 
-    raw_text = response.content.strip()
+    try:
+        response = llm.invoke(prompt)
+        raw_text = response.content.strip()
+        data = extract_json(raw_text)
+        validated = SQLGenerationSchema.model_validate(data)
 
-    # 1. Clean reasoning tags if model output <think>
-    clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL | re.IGNORECASE)
-    clean_text = re.sub(r"</?think>", "", clean_text, flags=re.IGNORECASE).strip()
+        state.can_be_answered = validated.can_be_answered
+        state.schema_explanation = validated.explanation or ""
+        state.generated_sql_query = validated.sql_query or ""
 
-    # 2. Prefer fenced code blocks if present
-    fences = re.findall(r"```(?:sql)?\s*([\s\S]*?)\s*```", clean_text, flags=re.IGNORECASE)
-    if fences:
-        # Take the last fenced block (which usually represents the final query)
-        candidate_sql = fences[-1].strip()
-    else:
-        candidate_sql = clean_text
+    except Exception as e:
+        # Fallback: attempt structured invocation with Gemini if medium LLM output malformed JSON
+        try:
+            gemini_llm = pick_llm("gemini")
+            response = gemini_llm.invoke(prompt)
+            raw_text = response.content.strip()
+            data = extract_json(raw_text)
+            validated = SQLGenerationSchema.model_validate(data)
 
-    # 3. Find the beginning of SELECT or WITH
-    sql_match = re.search(r"\b(?:SELECT|WITH)\b[\s\S]*", candidate_sql, flags=re.IGNORECASE)
-    if sql_match:
-        extracted_sql = sql_match.group(0).strip()
-    else:
-        extracted_sql = candidate_sql
+            state.can_be_answered = validated.can_be_answered
+            state.schema_explanation = validated.explanation or ""
+            state.generated_sql_query = validated.sql_query or ""
+        except Exception as e2:
+            state.can_be_answered = False
+            state.schema_explanation = f"Could not generate a structured query for this request: {e2}"
+            state.generated_sql_query = ""
+            state.error = str(e2)
 
-    # 4. If there is a semicolon terminating the statement, keep up to that semicolon
-    if ";" in extracted_sql:
-        extracted_sql = extracted_sql.split(";", 1)[0] + ";"
-    else:
-        extracted_sql = extracted_sql + ";"
-
-    # Final cleanup of markdown ticks
-    extracted_sql = extracted_sql.replace("```", "").strip()
-
-    state.generated_sql_query = extracted_sql
     return state
 
 
 # ============================================================
-# 4. EXTRACT JSON FROM JUDGE RESPONSE
+# 4. DETERMINISTIC VALIDATION NODE
 # ============================================================
 
-def extract_json(text: str) -> dict:
-    text = text.strip()
-    if "<think>" in text and "</think>" in text:
-        text = text.split("</think>", 1)[1].strip()
+def validate_sql_node(state: AgentSchema) -> AgentSchema:
+    # If the model marked the question as unanswerable from the schema
+    if not state.can_be_answered:
+        return state
 
-    text = re.sub(r"^```json\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\s*```$", "", text)
+    # Deterministically validate the generated SQL string
+    is_valid, clean_sql, err = validate_sql_deterministic(state.generated_sql_query)
 
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
+    if not is_valid:
+        state.error = f"Invalid SQL generated: {err}"
+        state.generated_sql_query = ""
+    else:
+        state.generated_sql_query = clean_sql
+        state.error = ""
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
+    return state
 
-    # Safe fallback if judge JSON fails
-    return {"answer": "Yes" if "safe" in text.lower() and "unsafe" not in text.lower() else "No", "comments": text[:100]}
+
+def route_after_validation(state: AgentSchema) -> str:
+    if not state.can_be_answered:
+        return "unanswerable_question"
+    if state.error:
+        return "invalid_sql"
+    return "is_safe_sql"
 
 
 # ============================================================
-# 5. SQL SECURITY JUDGE
+# 5. HANDLE UNANSWERABLE QUESTIONS & INVALID SQL
+# ============================================================
+
+def unanswerable_question(state: AgentSchema) -> AgentSchema:
+    explanation = state.schema_explanation or (
+        f"The requested information cannot be retrieved because the required fields or columns "
+        f"are not present in the current database schema for '{state.curated_ques}'."
+    )
+    state.final_answer = explanation
+    state.messages = state.messages + [AIMessage(content=explanation)]
+    return state
+
+
+def invalid_sql(state: AgentSchema) -> AgentSchema:
+    state.final_answer = (
+        f"⚠️ **Unable to Generate Valid SQL**\n\n"
+        f"The system generated a query that failed strict deterministic syntax validation.\n"
+        f"**Reason:** {state.error}"
+    )
+    state.messages = state.messages + [AIMessage(content=state.final_answer)]
+    return state
+
+
+# ============================================================
+# 6. SQL SECURITY JUDGE (AUDITS ONLY CLEAN SQL)
 # ============================================================
 
 def is_safe_sql(state: AgentSchema) -> AgentSchema:
@@ -194,10 +322,10 @@ You are an SQL Security Judge for a PostgreSQL database.
 
 Your task is to determine whether the generated SQL query is safe to execute.
 
-A query is SAFE only when it performs read-only data retrieval (SELECT, WITH).
+A query is SAFE ONLY when it performs read-only data retrieval (SELECT, WITH).
 
 The following operations are strictly UNSAFE:
-- INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, GRANT, REVOKE, EXECUTE
+- INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, GRANT, REVOKE, EXECUTE, COPY
 
 Return ONLY valid JSON:
 {{
@@ -213,23 +341,19 @@ SQL QUERY:
 {sql_query}
 """
 
-    response = llm.invoke(prompt)
-    data = extract_json(response.content)
-
     try:
+        response = llm.invoke(prompt)
+        data = extract_json(response.content)
         result = JudgeSchema.model_validate(data)
         state.is_safe = result.answer
         state.comments = result.comments
-    except Exception:
-        state.is_safe = "Yes" if data.get("answer", "").lower() == "yes" else "No"
-        state.comments = data.get("comments", "Evaluated by security judge")
+    except Exception as e:
+        # Strict security default on parse failure
+        state.is_safe = "No"
+        state.comments = f"Security judge failed to evaluate safely: {e}"
 
     return state
 
-
-# ============================================================
-# 6. CONDITIONAL ROUTING
-# ============================================================
 
 def is_safe_sql_edge(state: AgentSchema) -> str:
     if state.is_safe.lower() == "yes":
@@ -243,9 +367,9 @@ def is_safe_sql_edge(state: AgentSchema) -> str:
 
 def canceled_sql(state: AgentSchema) -> AgentSchema:
     state.final_answer = (
-        "⚠️ **Query Blocked**: The generated SQL query was flagged as potentially unsafe.\n\n"
+        "⚠️ **Query Blocked by Security Judge**: The generated SQL query was flagged as potentially unsafe.\n\n"
         f"**Reason:** {state.comments}\n\n"
-        f"**Generated SQL:**\n```sql\n{state.generated_sql_query}\n```"
+        f"**Blocked SQL:**\n```sql\n{state.generated_sql_query}\n```"
     )
     state.messages = state.messages + [AIMessage(content=state.final_answer)]
     return state
@@ -299,8 +423,8 @@ Database returned: {execution_result}
 
 Your task is to present this data in a clear, well-structured, natural language response.
 - Highlight key insights directly with exact numbers from the data.
-- When presenting weather vs ride metrics, express results in terms of **observed correlations** (e.g., "The data shows that during rainy periods..."). Avoid claiming direct causality.
-- Format multi-row results neatly with bullet points or summary highlights.
+- When presenting weather vs ride metrics, express results in terms of **observed correlations** (e.g., "The data indicates that during rainy periods..."). Avoid claiming direct causality.
+- Format multi-row results neatly with bullet points or summary tables.
 
 Provide a concise and helpful answer:
 """
@@ -326,15 +450,32 @@ sql_agent_graph = StateGraph(AgentSchema)
 sql_agent_graph.add_node("curate_ques", curate_ques)
 sql_agent_graph.add_node("prompt_query_context", prompt_query_context)
 sql_agent_graph.add_node("generate_sql", generate_sql)
+sql_agent_graph.add_node("validate_sql_node", validate_sql_node)
+sql_agent_graph.add_node("unanswerable_question", unanswerable_question)
+sql_agent_graph.add_node("invalid_sql", invalid_sql)
 sql_agent_graph.add_node("is_safe_sql", is_safe_sql)
 sql_agent_graph.add_node("canceled_sql", canceled_sql)
 sql_agent_graph.add_node("execute_sql", execute_sql)
 sql_agent_graph.add_node("represent_final_answer", represent_final_answer)
 
+# Graph wiring
 sql_agent_graph.add_edge(START, "curate_ques")
 sql_agent_graph.add_edge("curate_ques", "prompt_query_context")
 sql_agent_graph.add_edge("prompt_query_context", "generate_sql")
-sql_agent_graph.add_edge("generate_sql", "is_safe_sql")
+sql_agent_graph.add_edge("generate_sql", "validate_sql_node")
+
+sql_agent_graph.add_conditional_edges(
+    "validate_sql_node",
+    route_after_validation,
+    {
+        "unanswerable_question": "unanswerable_question",
+        "invalid_sql": "invalid_sql",
+        "is_safe_sql": "is_safe_sql"
+    }
+)
+
+sql_agent_graph.add_edge("unanswerable_question", END)
+sql_agent_graph.add_edge("invalid_sql", END)
 
 sql_agent_graph.add_conditional_edges(
     "is_safe_sql",
@@ -355,17 +496,20 @@ sql_analyst = sql_agent_graph.compile()
 if __name__ == "__main__":
     test_input = {
         "messages": [],
-        "user_question": "Does rainfall correlate with ride cancellations?",
+        "user_question": "What location and timezone does the weather_data table represent?",
         "curated_ques": "",
         "Prompt_query_context": "",
+        "can_be_answered": True,
+        "schema_explanation": "",
         "generated_sql_query": "",
         "is_safe": "No",
         "comments": "",
         "sql_query_execution_result": "",
-        "final_answer": ""
+        "final_answer": "",
+        "error": ""
     }
     res = sql_analyst.invoke(test_input)
     print("\n--- SQL Analyst Result ---")
-    print("SQL:", res.get("generated_sql_query"))
-    print("Safe:", res.get("is_safe"))
-    print("Final Answer:", res.get("final_answer"))
+    print("Can be answered:", res.get("can_be_answered"))
+    print("SQL Query:", res.get("generated_sql_query"))
+    print("Final Answer:\n", res.get("final_answer"))

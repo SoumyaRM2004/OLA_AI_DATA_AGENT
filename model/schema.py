@@ -3,11 +3,28 @@ from typing import Annotated, Literal, List, Dict, Any, Optional
 from operator import add
 
 
+class SQLGenerationSchema(BaseModel):
+    can_be_answered: bool = Field(
+        default=True,
+        description="True if the question can be answered using the provided database schema, False if the requested information or columns do not exist in the schema."
+    )
+    sql_query: Optional[str] = Field(
+        default="",
+        description="The valid, single-statement read-only PostgreSQL query (SELECT or WITH). Must be empty or null if can_be_answered is False."
+    )
+    explanation: Optional[str] = Field(
+        default="",
+        description="Clear explanation if the question cannot be answered using the schema (e.g. explaining what columns exist and what is missing)."
+    )
+
+
 class AgentSchema(BaseModel):
     messages: Annotated[list, add] = Field(default_factory=list, description="List of messages sent by the agent")
     user_question: str = Field(default="", description="The original question asked by user")
     curated_ques: str = Field(default="", description="Curated user question")
     Prompt_query_context: str = Field(default="", description="A detailed prompt with SQL DB context that will help agent to generate SQL Query for the user question")
+    can_be_answered: bool = Field(default=True, description="Whether the question can be answered from schema")
+    schema_explanation: str = Field(default="", description="Explanation if question is unanswerable from schema")
     generated_sql_query: str = Field(default="", description="Generated SQL Query for the user question")
     is_safe: Literal["Yes", "No"] = Field(default="No", description="Yes if the SQL query is safe (read-only), No otherwise")
     comments: str = Field(default="", description="Comments regarding whether the SQL query is safe or not")
