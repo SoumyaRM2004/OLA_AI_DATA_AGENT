@@ -1215,6 +1215,9 @@ function initDataImport() {
     if (btnLoadDb) {
         btnLoadDb.disabled = Object.keys(stagedDatasetsState).length === 0;
     }
+    if (btnClearStaged) {
+        btnClearStaged.disabled = Object.keys(stagedDatasetsState).length === 0;
+    }
 
     // Form Submission: Validate CSV
     uploadForm.addEventListener('submit', async (e) => {
@@ -1334,7 +1337,9 @@ function initDataImport() {
         } catch (err) {
             loadOutput.innerHTML = `<div class="import-error-list"><strong>Failed to execute database load:</strong> ${escapeHtml(err.message)}</div>`;
         } finally {
-            btnLoadDb.disabled = Object.keys(stagedDatasetsState).length === 0;
+            const hasStaged = Object.keys(stagedDatasetsState).length > 0;
+            btnLoadDb.disabled = !hasStaged;
+            if (btnClearStaged) btnClearStaged.disabled = !hasStaged;
             btnLoadDb.innerHTML = '<i data-lucide="database"></i> Load into PostgreSQL (Atomic Transaction)';
             if (window.lucide) lucide.createIcons();
         }
@@ -1349,6 +1354,8 @@ function initDataImport() {
             loadOutput.innerHTML = '';
             validationOutput.style.display = 'none';
             document.getElementById('import-preview-section').style.display = 'none';
+            if (btnLoadDb) btnLoadDb.disabled = true;
+            if (btnClearStaged) btnClearStaged.disabled = true;
         } catch (err) {
             console.error('Error clearing staged:', err);
         }
@@ -1430,6 +1437,7 @@ function renderValidationResult(data) {
 function refreshStagedTable() {
     const tbody = document.getElementById('staged-datasets-body');
     const btnLoadDb = document.getElementById('btn-load-database');
+    const btnClearStaged = document.getElementById('btn-clear-staged');
     const tables = Object.keys(stagedDatasetsState);
 
     if (!tbody) return;
@@ -1443,10 +1451,12 @@ function refreshStagedTable() {
             </tr>
         `;
         if (btnLoadDb) btnLoadDb.disabled = true;
+        if (btnClearStaged) btnClearStaged.disabled = true;
         return;
     }
 
     if (btnLoadDb) btnLoadDb.disabled = false;
+    if (btnClearStaged) btnClearStaged.disabled = false;
 
     tbody.innerHTML = tables.map(tbl => {
         const item = stagedDatasetsState[tbl];

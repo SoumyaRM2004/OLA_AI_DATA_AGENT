@@ -1032,9 +1032,31 @@ body {
     margin-top: 6px;
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
     filter: brightness(1.1);
     transform: translateY(-1px);
+}
+
+.btn-primary:disabled,
+.btn-primary[disabled] {
+    background: rgba(255, 255, 255, 0.06) !important;
+    color: var(--text-dim) !important;
+    cursor: not-allowed !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    filter: none !important;
+    transform: none !important;
+    box-shadow: none !important;
+    opacity: 0.5 !important;
+    pointer-events: none !important;
+}
+
+.btn-refresh:disabled,
+.btn-refresh[disabled] {
+    opacity: 0.4 !important;
+    cursor: not-allowed !important;
+    pointer-events: none !important;
+    transform: none !important;
+    filter: grayscale(1) !important;
 }
 
 .etl-output-box {
