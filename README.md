@@ -1,49 +1,86 @@
 # 🚗 OLA AI Data Agent
 
-An AI-powered, multi-agent analytics and ETL platform for OLA ride-hailing data — built with **LangGraph**, **FastAPI**, **PostgreSQL**, and a modern **HTML5/CSS3/JS** interactive visual dashboard.
+An AI-powered, multi-agent analytics and ETL platform for **OLA-inspired ride-hailing data** — built with **LangGraph**, **FastAPI**, **PostgreSQL**, and a modern **HTML5/CSS3/JavaScript** interactive visual dashboard.
 
-Ask questions in natural English, and the agent automatically routes your request to specialized sub-agents:
-- **SQL Analyst** — Natural language to PostgreSQL with an automated **"LLM as Judge"** security audit, auto-generated interactive charts (Bar, Line, Doughnut), and exportable data tables.
-- **ETL Analyst** — Extract from any REST API, automatically generate & execute Pandas transformations, and inspect datasets.
+Ask questions in plain English, and the agent automatically routes your request to specialized sub-agents:
+- **SQL Analyst** — Natural language to PostgreSQL queries with an automated **"LLM as Judge"** security audit, auto-generated interactive charts (Bar, Line, Doughnut), and exportable data tables.
+- **ETL Analyst** — Extracts external **Open-Meteo weather data** and other open APIs, transforms datasets using Pandas, and loads them into PostgreSQL for cross-domain mobility analytics.
+
+> ℹ️ **Dataset Note**: The ride-hailing data used in this project is an **OLA-inspired synthetic dataset** modeled for realistic mobility analytics (rides, drivers, vehicles, payments, ratings). Weather integration demonstrates how an AI data platform enriches mobility operations with external contextual data.
 
 ![Python](https://img.shields.io/badge/Python-3.12+-blue?logo=python)
 ![LangGraph](https://img.shields.io/badge/LangGraph-Agentic_AI-green)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Modern_Web-teal?logo=fastapi)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-blue?logo=postgresql)
+![Open-Meteo](https://img.shields.io/badge/Open--Meteo-Weather_API-orange)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ---
 
 ## 🌟 Interactive Web Dashboard
 
-The application comes with a dark-themed glassmorphism web interface featuring:
+The application includes a dark-themed glassmorphism web interface featuring:
 
-1. **AI Chat Studio**: Interactive conversation, suggested query chips, agent execution timeline (Router &rarr; Question Curation &rarr; SQL Generation &rarr; Security Judge &rarr; Execution), with **auto-generated Chart.js charts** and searchable tables.
-2. **Analytics KPI Dashboard**: Live KPI cards (total rides, completed rides, total revenue, average driver ratings) with breakdown graphs.
-3. **Database Explorer**: Live database schema inspector, table data viewer, search/filtering, and row counts for all 5 OLA tables.
-4. **ETL Studio**: Visual interface to extract from any API endpoint (JSON/CSV/Parquet) and run natural language transformations.
-5. **Agent Architecture Visualizer**: Step-by-step breakdown of the LangGraph multi-agent flow and security policies.
+1. **AI Chat Studio**: Interactive conversation, suggested query chips, agent execution timeline (Router &rarr; Question Curation &rarr; SQL Generation &rarr; Security Judge &rarr; Execution), with **auto-generated Chart.js visualizations** and searchable tables.
+2. **Analytics KPI Dashboard**: Live KPI cards (total rides, completed rides, total revenue in ₹, average driver ratings) with breakdown graphs.
+3. **Database Explorer**: Live schema inspector, table data viewer, search/filtering, and row counts across all 6 tables (`users`, `vehicles`, `rides`, `payments`, `ratings`, `weather_data`).
+4. **Weather ETL Studio**: Visual interface to extract hourly weather from Open-Meteo or any external REST API, run natural language Pandas transformations, and load datasets into PostgreSQL with one click.
+5. **Agent Architecture Visualizer**: Step-by-step interactive diagram of the LangGraph multi-agent flow and security policies.
+
+---
+
+## 🌤️ External Data Enrichment (Weather + Mobility)
+
+In real-world ride-hailing operations, external conditions like **precipitation, rain, and temperature** significantly correlate with ride demand, driver availability, cancellation rates, and surge pricing.
+
+```
+OLA-inspired ride data
+        +
+External weather data (Open-Meteo)
+        ↓
+ETL pipeline
+        ↓
+PostgreSQL (weather_data)
+        ↓
+AI-powered SQL Analytics
+        ↓
+Insights & Visualizations
+```
+
+### Supported Correlation Analyses:
+- **Rain vs. Cancellations**: Analyzing cancellation percentages during rainy vs. clear weather intervals.
+- **Weather vs. Surge Multiplier**: Comparing average surge multipliers and fares across rainy and dry periods.
+- **Daily Weather Summaries**: Aggregating precipitation and temperature trends by date.
+
+*Note: Analyses represent statistical correlations observed in the dataset rather than direct claims of causation.*
 
 ---
 
 ## 📐 Architecture
 
 ```
-                    ┌──────────────────┐
-                    │   User Question  │
-                    └────────┬─────────┘
-                             │
-                    ┌────────▼─────────┐
-                    │   Data Agent     │
-                    │   (Router)       │
-                    │   LLM classifies │
-                    │   → "sql" / "etl"│
-                    └───┬──────────┬───┘
-                        │          │
-              ┌─────────▼──┐  ┌───▼──────────┐
-              │ SQL Analyst │  │ ETL Analyst  │
-              │   Agent     │  │   Agent      │
-              └─────────────┘  └──────────────┘
+                         USER
+                           │
+                           ▼
+                     DATA AGENT (Router)
+                     /         \
+                    /           \
+                   ▼             ▼
+             SQL ANALYST     ETL ANALYST
+                  │                │
+                  ▼                ▼
+             PostgreSQL       External APIs
+             (OLA Data)      (Open-Meteo)
+                  │                │
+                  └───────┬────────┘
+                          ▼
+                   Structured Data
+                          │
+                          ▼
+                    AI Analytics
+                          │
+                          ▼
+                Tables / Charts / Insights
 ```
 
 ### 🔍 SQL Analyst Pipeline
@@ -53,22 +90,22 @@ User Question
     │
     ▼
 ┌─────────────────┐
-│ 1. Curate       │ ──→ Rewrites question for clarity
+│ 1. Curate       │ ──→ Rewrites question for clarity & PostgreSQL context
 │    Question     │
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│ 2. Build Prompt │ ──→ Fetches DB schema + sample data
+│ 2. Build Prompt │ ──→ Fetches DB schema (rides, users, weather_data, etc.)
 │    + Context    │
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│ 3. Generate SQL │ ──→ LLM writes PostgreSQL query
+│ 3. Generate SQL │ ──→ LLM writes PostgreSQL query with proper JOINs
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│ 4. Security     │ ──→ "LLM as Judge" checks for unsafe
-│    Judge        │     operations (INSERT/DELETE/DROP...)
+│ 4. Security     │ ──→ "LLM as Judge" checks for unsafe operations
+│    Judge        │     (blocks INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE)
 └────────┬────────┘
          │
     ┌────┴────┐
@@ -82,7 +119,7 @@ User Question
 └───┬────┘ └────────────┘
     ▼
 ┌─────────────────┐
-│ 5. Synthesize   │ ──→ Natural language answer + Tabular data
+│ 5. Synthesize   │ ──→ Natural language answer + Tabular records
 │    & Visualize  │     + Dynamic Chart.js visualizations
 └─────────────────┘
 ```
@@ -90,30 +127,30 @@ User Question
 ### 🔄 ETL Analyst Pipeline
 
 ```
-User Question
+User Question / API URL
     │
     ▼
 ┌─────────────────┐
-│ LLM Node        │ ──→ Decides which tool to use
+│ LLM Node        │ ──→ Selects appropriate tool
 └────────┬────────┘
          ▼
-    ┌────┴────────────┐
-    │                 │
-┌───▼──────────┐ ┌───▼──────────────┐
-│ Extract &    │ │ Transform &      │
-│ Load Tool    │ │ Load Tool        │
-│              │ │                  │
-│ API → CSV/   │ │ LLM generates    │
-│ JSON/Parquet │ │ Pandas code →    │
-│              │ │ executes it      │
-└──────────────┘ └──────────────────┘
+    ┌────┴─────────────────────────┐
+    │                              │
+┌───▼──────────┐ ┌───▼──────────────┐ ┌───▼──────────────┐
+│ Extract &    │ │ Transform &      │ │ Load to          │
+│ Load Tool    │ │ Load Tool        │ │ Database Tool    │
+│              │ │                  │ │                  │
+│ Open-Meteo   │ │ LLM generates    │ │ Inserts dataset  │
+│ API → CSV/   │ │ Pandas code →    │ │ into PostgreSQL  │
+│ JSON/Parquet │ │ executes safely  │ │ (weather_data)   │
+└──────────────┘ └──────────────────┘ └──────────────────┘
 ```
 
 ---
 
-## 🗄️ Database Schema (OLA Ride-Hailing)
+## 🗄️ Database Schema
 
-The project uses a realistic ride-hailing dataset with 5 interconnected tables:
+The database contains 6 interconnected tables:
 
 ```
 ┌──────────┐     ┌──────────┐     ┌──────────┐
@@ -129,15 +166,16 @@ The project uses a realistic ride-hailing dataset with 5 interconnected tables:
                        │
               ┌────────┴────────┐
               │                 │
-         ┌────▼─────┐    ┌─────▼────┐
-         │ PAYMENTS │    │ RATINGS  │
-         │          │    │          │
-         │payment_id│    │rating_id │
-         │ ride_id  │    │ ride_id  │
-         │ amount   │    │ rating   │
-         │ method   │    │ comment  │
-         │ status   │    │ rated_at │
-         └──────────┘    └──────────┘
+         ┌────▼─────┐    ┌─────▼────┐    ┌─────────────────┐
+         │ PAYMENTS │    │ RATINGS  │    │  WEATHER_DATA   │
+         │          │    │          │    │                 │
+         │payment_id│    │rating_id │    │ weather_id (PK) │
+         │ ride_id  │    │ ride_id  │    │ recorded_at     │
+         │ amount   │    │ rating   │    │ city / lat / lon│
+         │ method   │    │ comment  │    │ temperature_c   │
+         │ status   │    │ rated_at │    │ precipitation_mm│
+         └──────────┘    └──────────┘    │ rain_mm / rainy │
+                                         └─────────────────┘
 ```
 
 ---
@@ -148,10 +186,10 @@ The project intelligently uses different LLM models based on task complexity to 
 
 | Tier | Model | Used For |
 |------|-------|----------|
-| 🟢 **Low** | `openai/gpt-oss-20b` (Groq) | Question curation, answer formatting |
-| 🟡 **Medium** | `qwen/qwen3.6-27b` (Groq) | SQL generation |
+| 🟢 **Low** | `openai/gpt-oss-20b` (Groq) | Question curation & answer formatting |
+| 🟡 **Medium** | `qwen/qwen3.6-27b` (Groq) | PostgreSQL SQL generation |
 | 🔴 **High** | `openai/gpt-oss-120b` (Groq) | SQL security validation judge |
-| 💎 **Gemini** | `gemini-3.5-flash` (Google) | Router classification & ETL tool binding |
+| 💎 **Gemini** | `gemini-3.5-flash` (Google) | Router classification & ETL tool calling |
 
 ---
 
@@ -163,14 +201,14 @@ OLA_AI_DataAgent/
 ├── agents/                    # LangGraph agent definitions
 │   ├── data_agent.py          # Main router agent & chart detector
 │   ├── sql_analyst.py         # SQL generation, security judge & execution
-│   └── etl_analyst.py         # Extract/Transform/Load operations
+│   └── etl_analyst.py         # Open-Meteo extraction & Pandas transform
 │
 ├── model/                     # Pydantic schemas
 │   └── schema.py              # AgentSchema, RouterSchema, JudgeSchema
 │
 ├── utils/                     # Utility modules
 │   ├── database.py            # PostgreSQL connection & structured execution
-│   ├── etl_tools.py           # ETL operations (extract, transform, load, preview)
+│   ├── etl_tools.py           # ETL operations (extract, transform, preview, load)
 │   └── llm_pick.py            # Multi-tier LLM selector
 │
 ├── static/                    # Modern Web Frontend
@@ -181,9 +219,9 @@ OLA_AI_DataAgent/
 │       └── app.js             # Chat streaming, Chart.js, and explorer logic
 │
 ├── data/                      # Data directory
-│   ├── *.csv                  # Raw OLA dataset (users, rides, payments, ratings, vehicles)
-│   ├── extract/               # Extracted API data output
-│   └── transform/             # Transformed data output
+│   ├── *.csv                  # Synthetic OLA dataset (users, rides, payments, ratings, vehicles)
+│   ├── extract/               # Extracted weather and API data output
+│   └── transform/             # Transformed dataset output
 │
 ├── Pictures/                  # Architecture diagrams
 │
@@ -242,13 +280,11 @@ password=your_db_password
 
 ### 4. Setup the Database
 
-Load the OLA dataset into PostgreSQL:
+Create all tables (`users`, `vehicles`, `rides`, `payments`, `ratings`, `weather_data`) and seed the dataset:
 
 ```bash
 uv run python feed_db.py
 ```
-
-This creates 5 tables (`users`, `vehicles`, `rides`, `payments`, `ratings`) and loads ~15,000+ records.
 
 ### 5. Launch the Web Application
 
@@ -264,13 +300,23 @@ Or via `main.py`:
 uv run python main.py --server
 ```
 
-Now open your browser and navigate to **`http://localhost:8000`**!
+Now open your browser and navigate to:
+👉 **`http://localhost:8000`**
 
 ---
 
 ## 💡 Example Queries
 
-### SQL Queries (Natural Language → SQL → Chart & Table)
+### Weather & Mobility Correlation Queries
+
+```
+"Does rainfall correlate with ride cancellations?"
+"Compare average surge multiplier during rainy and non-rainy periods"
+"Show average rainfall and temperature by date from weather data"
+"What is the total ride count and cancellation rate during rainy hours?"
+```
+
+### General OLA Ride-Hailing Analytics
 
 ```
 "What are the top 5 highest rated drivers with their average ratings?"
@@ -283,18 +329,19 @@ Now open your browser and navigate to **`http://localhost:8000`**!
 ### ETL Operations
 
 ```
-"Extract data from https://pokeapi.co/api/v2/pokemon and save to data/extract as csv"
-"Transform data/extract/extracted_data.csv and filter only names starting with 'b', save to data/transform as csv"
+"Extract weather data from https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code and save to data/extract as csv"
+"Transform data/extract/weather_data.csv and filter hours where rain_mm > 0, save to data/transform as csv"
 ```
 
 ---
 
 ## 🔒 Security Features
 
-- **SQL Security Judge** — Every generated SQL query is validated by an LLM judge before execution
-- **Read-Only Enforcement** — INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, GRANT, REVOKE operations are blocked
-- **Structured Validation** — Pydantic schemas enforce type safety on all LLM responses
-- **Environment Variables** — All secrets stored in `.env` (never hardcoded in repository)
+- **SQL Security Judge** — Every generated SQL query is audited by an LLM judge before database execution.
+- **Read-Only Enforcement** — Mutating commands (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `TRUNCATE`, `CREATE`, `GRANT`, `REVOKE`) are blocked.
+- **Parameterized Queries** — SQL execution uses parameterization and identifier escaping.
+- **Structured Validation** — Pydantic schemas enforce type safety on all agent outputs.
+- **Environment Variables** — All secrets are kept in `.env` (gitignored; never committed).
 
 ---
 
@@ -304,12 +351,13 @@ Now open your browser and navigate to **`http://localhost:8000`**!
 |-----------|---------|
 | [LangGraph](https://langchain-ai.github.io/langgraph/) | Multi-agent orchestration with state graphs |
 | [LangChain](https://www.langchain.com/) | LLM integration, tool calling, message handling |
-| [FastAPI](https://fastapi.tiangolo.com/) | High-performance Python web backend & REST API |
+| [FastAPI](https://fastapi.tiangolo.com/) | Python web backend & REST API |
 | [Chart.js](https://www.chartjs.org/) | Auto-generated responsive client-side charts |
-| [Lucide Icons](https://lucide.dev/) | Modern UI icons |
-| [Groq](https://groq.com/) | Ultra-fast LLM inference (free tier) |
+| [Open-Meteo](https://open-meteo.com/) | Free, open-source weather forecast & archive API |
+| [Lucide Icons](https://lucide.dev/) | Modern UI iconography |
+| [Groq](https://groq.com/) | Fast LLM inference (Llama/Qwen/GPT-OSS) |
 | [Google Gemini](https://ai.google.dev/) | Tool calling & router classification |
-| [PostgreSQL](https://www.postgresql.org/) | Relational database for OLA dataset |
+| [PostgreSQL](https://www.postgresql.org/) | Relational database for ride-hailing & weather data |
 | [Pydantic](https://docs.pydantic.dev/) | Schema validation and structured outputs |
 | [Pandas](https://pandas.pydata.org/) | Data transformation in ETL pipeline |
 | [UV](https://docs.astral.sh/uv/) | Fast Python package manager |

@@ -19,8 +19,8 @@ from agents.data_agent import execute_agent_query
 
 app = FastAPI(
     title="OLA AI Data Agent API",
-    description="Multi-Agent AI for OLA Ride-Hailing Analytics & ETL Operations",
-    version="1.0.0"
+    description="Multi-Agent AI for OLA Ride-Hailing Analytics & Weather ETL Operations",
+    version="1.1.0"
 )
 
 # CORS middleware for development flexibility
@@ -39,15 +39,20 @@ class ChatRequest(BaseModel):
     message: str
 
 class ExtractRequest(BaseModel):
-    url: str
+    url: str = "https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code"
     output_format: str = "csv"
     output_folder: str = "data/extract"
+    city_name: Optional[str] = "Toronto"
 
 class TransformRequest(BaseModel):
-    input_file: str
-    user_question: str
+    input_file: str = "data/extract/weather_data.csv"
+    user_question: str = "Filter rows where rain_mm > 0 and add an is_rainy flag"
     output_format: str = "csv"
     output_folder: str = "data/transform"
+
+class LoadDbRequest(BaseModel):
+    file_path: str = "data/extract/weather_data.csv"
+    table_name: str = "weather_data"
 
 
 # ------------------- API ENDPOINTS -------------------
@@ -78,7 +83,7 @@ async def get_stats():
 @app.get("/api/schema")
 async def get_schema():
     """
-    Fetches schema information, table list, and row counts.
+    Fetches schema information, table list, and row counts for all tables (including weather_data).
     """
     db = DatabaseConnection()
     conn = db.get_connection()
@@ -88,7 +93,7 @@ async def get_schema():
             content={"error": "Database connection is not available. Please check .env credentials."}
         )
 
-    tables = ["users", "vehicles", "rides", "payments", "ratings"]
+    tables = ["users", "vehicles", "rides", "payments", "ratings", "weather_data"]
     schema_data = {}
 
     for table in tables:
@@ -122,7 +127,7 @@ async def get_table_content(table_name: str, limit: int = 50):
     """
     Returns live table data with pagination limit for the Database Explorer.
     """
-    valid_tables = ["users", "vehicles", "rides", "payments", "ratings"]
+    valid_tables = ["users", "vehicles", "rides", "payments", "ratings", "weather_data"]
     if table_name not in valid_tables:
         raise HTTPException(status_code=400, detail=f"Invalid table name. Choose from {valid_tables}")
 
@@ -134,17 +139,21 @@ async def get_table_content(table_name: str, limit: int = 50):
 @app.post("/api/etl/extract")
 async def trigger_extract(request: ExtractRequest):
     """
-    Triggers an API extraction and saves the file.
+    Triggers an API extraction (e.g. Open-Meteo Weather) and saves the file.
     """
     etl = ETLTools()
     msg = etl.extract_load(
         url=request.url,
         output_folder=request.output_folder,
-        format=request.output_format
+        format=request.output_format,
+        city_name=request.city_name
     )
     
     # Check if file was created
-    expected_path = os.path.join(etl._resolve_path(request.output_folder), f"extracted_data.{request.output_format.lower()}")
+    expected_path = os.path.join(etl._resolve_path(request.output_folder), f"weather_data.{request.output_format.lower()}")
+    if not os.path.exists(expected_path):
+        expected_path = os.path.join(etl._resolve_path(request.output_folder), f"extracted_data.{request.output_format.lower()}")
+
     preview = {}
     if os.path.exists(expected_path):
         preview = etl.preview_file(expected_path, max_rows=5)
@@ -157,7 +166,6 @@ async def trigger_transform(request: TransformRequest):
     """
     Triggers an LLM-assisted transformation on an existing dataset.
     """
-    # Use etl_analyst directly for natural language transform
     from agents.etl_analyst import transform_load_tool
     msg = transform_load_tool.invoke({
         "input_file_path": request.input_file,
@@ -170,6 +178,16 @@ async def trigger_transform(request: TransformRequest):
     files = etl.list_files(request.output_folder)
 
     return JSONResponse(content={"message": msg, "output_files": files})
+
+
+@app.post("/api/etl/load-db")
+async def trigger_load_to_database(request: LoadDbRequest):
+    """
+    Loads an extracted or transformed CSV dataset into a PostgreSQL table.
+    """
+    etl = ETLTools()
+    res_msg = etl.load_to_database(request.file_path, request.table_name)
+    return JSONResponse(content={"message": res_msg})
 
 
 @app.get("/api/files")

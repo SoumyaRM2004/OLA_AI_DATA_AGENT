@@ -3,21 +3,22 @@ import csv
 import psycopg2
 from psycopg2 import sql
 from dotenv import load_dotenv
+
 load_dotenv()
 
-if 'port' not in os.environ:
-    os.environ['port'] = '5432'
+if "port" not in os.environ:
+    os.environ["port"] = "5432"
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
 DB_CONFIG = {
-    "host": os.environ['host'],
-    "port": int(os.environ['port']),
-    "database": os.environ['database'],
-    "user": os.environ['user'],
-    "password": os.environ['password'],
+    "host": os.environ["host"],
+    "port": int(os.environ["port"]),
+    "database": os.environ["database"],
+    "user": os.environ["user"],
+    "password": os.environ["password"],
 }
 
 CSV_DIR = "data"
@@ -179,40 +180,42 @@ CREATE TABLE IF NOT EXISTS public.ratings (
 
 
 -- =========================================================
+-- WEATHER DATA (EXTERNAL CONTEXTUAL ENRICHMENT)
+-- =========================================================
+
+CREATE TABLE IF NOT EXISTS public.weather_data (
+    weather_id SERIAL PRIMARY KEY,
+    recorded_at TIMESTAMP NOT NULL,
+    city VARCHAR(100),
+    latitude DECIMAL(9,6),
+    longitude DECIMAL(9,6),
+    temperature_c DECIMAL(5,2),
+    precipitation_mm DECIMAL(6,2),
+    rain_mm DECIMAL(6,2),
+    weather_code INTEGER,
+    is_rainy BOOLEAN
+);
+
+
+-- =========================================================
 -- INDEXES
 -- =========================================================
 
-CREATE INDEX IF NOT EXISTS idx_vehicles_driver_id
-ON public.vehicles(driver_id);
-
-CREATE INDEX IF NOT EXISTS idx_rides_rider_id
-ON public.rides(rider_id);
-
-CREATE INDEX IF NOT EXISTS idx_rides_driver_id
-ON public.rides(driver_id);
-
-CREATE INDEX IF NOT EXISTS idx_rides_requested_at
-ON public.rides(requested_at);
-
-CREATE INDEX IF NOT EXISTS idx_rides_status
-ON public.rides(status);
-
-CREATE INDEX IF NOT EXISTS idx_payments_ride_id
-ON public.payments(ride_id);
-
-CREATE INDEX IF NOT EXISTS idx_payments_user_id
-ON public.payments(user_id);
-
-CREATE INDEX IF NOT EXISTS idx_ratings_ride_id
-ON public.ratings(ride_id);
-
-CREATE INDEX IF NOT EXISTS idx_ratings_driver_id
-ON public.ratings(driver_id);
+CREATE INDEX IF NOT EXISTS idx_vehicles_driver_id ON public.vehicles(driver_id);
+CREATE INDEX IF NOT EXISTS idx_rides_rider_id ON public.rides(rider_id);
+CREATE INDEX IF NOT EXISTS idx_rides_driver_id ON public.rides(driver_id);
+CREATE INDEX IF NOT EXISTS idx_rides_requested_at ON public.rides(requested_at);
+CREATE INDEX IF NOT EXISTS idx_rides_status ON public.rides(status);
+CREATE INDEX IF NOT EXISTS idx_payments_ride_id ON public.payments(ride_id);
+CREATE INDEX IF NOT EXISTS idx_payments_user_id ON public.payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_ratings_ride_id ON public.ratings(ride_id);
+CREATE INDEX IF NOT EXISTS idx_ratings_driver_id ON public.ratings(driver_id);
+CREATE INDEX IF NOT EXISTS idx_weather_recorded_at ON public.weather_data(recorded_at);
+CREATE INDEX IF NOT EXISTS idx_weather_city ON public.weather_data(city);
 
 """
 
 cursor.execute(create_tables_sql)
-
 print("Tables created successfully")
 
 
@@ -220,34 +223,26 @@ print("Tables created successfully")
 # OPTIONAL: CLEAR EXISTING DATA
 # ============================================================
 
-# Uncomment this section if you want every execution
-# to completely reload the CSV data.
-
-
 cursor.execute("""
     TRUNCATE TABLE
         public.ratings,
         public.payments,
         public.rides,
         public.vehicles,
-        public.users
+        public.users,
+        public.weather_data
     CASCADE;
 """)
-
 
 
 # ============================================================
 # LOAD CSV USING POSTGRES COPY
 # ============================================================
 
-def load_csv(table_name, csv_file, columns):
-
-    file_path = os.path.join(CSV_DIR, csv_file)
-
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(
-            f"CSV file not found: {file_path}"
-        )
+def load_csv(table_name, csv_path, columns):
+    if not os.path.exists(csv_path):
+        print(f"Skipping {csv_path} (file not found)")
+        return
 
     copy_sql = sql.SQL("""
         COPY {} ({})
@@ -260,24 +255,13 @@ def load_csv(table_name, csv_file, columns):
         )
     """).format(
         sql.Identifier("public", table_name),
-        sql.SQL(", ").join(
-            sql.Identifier(column)
-            for column in columns
-        )
+        sql.SQL(", ").join(sql.Identifier(column) for column in columns)
     )
 
-    with open(
-        file_path,
-        "r",
-        encoding="utf-8"
-    ) as file:
+    with open(csv_path, "r", encoding="utf-8") as file:
+        cursor.copy_expert(copy_sql, file)
 
-        cursor.copy_expert(
-            copy_sql,
-            file
-        )
-
-    print(f"Loaded {csv_file}")
+    print(f"Loaded {csv_path} into {table_name}")
 
 
 # ============================================================
@@ -286,7 +270,7 @@ def load_csv(table_name, csv_file, columns):
 
 load_csv(
     "users",
-    "users.csv",
+    os.path.join(CSV_DIR, "users.csv"),
     [
         "user_id",
         "first_name",
@@ -308,7 +292,7 @@ load_csv(
 
 load_csv(
     "vehicles",
-    "vehicles.csv",
+    os.path.join(CSV_DIR, "vehicles.csv"),
     [
         "vehicle_id",
         "driver_id",
@@ -328,7 +312,7 @@ load_csv(
 
 load_csv(
     "rides",
-    "rides.csv",
+    os.path.join(CSV_DIR, "rides.csv"),
     [
         "ride_id",
         "rider_id",
@@ -355,7 +339,7 @@ load_csv(
 
 load_csv(
     "payments",
-    "payments.csv",
+    os.path.join(CSV_DIR, "payments.csv"),
     [
         "payment_id",
         "ride_id",
@@ -375,7 +359,7 @@ load_csv(
 
 load_csv(
     "ratings",
-    "ratings.csv",
+    os.path.join(CSV_DIR, "ratings.csv"),
     [
         "rating_id",
         "ride_id",
@@ -389,6 +373,29 @@ load_csv(
 
 
 # ============================================================
+# LOAD WEATHER DATA (IF EXTRACTED)
+# ============================================================
+
+weather_csv_path = os.path.join(CSV_DIR, "extract", "weather_data.csv")
+if os.path.exists(weather_csv_path):
+    load_csv(
+        "weather_data",
+        weather_csv_path,
+        [
+            "recorded_at",
+            "temperature_c",
+            "precipitation_mm",
+            "rain_mm",
+            "weather_code",
+            "latitude",
+            "longitude",
+            "city",
+            "is_rainy",
+        ],
+    )
+
+
+# ============================================================
 # VERIFY RECORD COUNTS
 # ============================================================
 
@@ -398,42 +405,30 @@ tables = [
     "rides",
     "payments",
     "ratings",
+    "weather_data",
 ]
 
 print("\nRecord counts:")
 print("-" * 40)
 
 for table in tables:
-
     cursor.execute(
-        sql.SQL(
-            "SELECT COUNT(*) FROM {}.{}"
-        ).format(
+        sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
             sql.Identifier("public"),
             sql.Identifier(table)
         )
     )
-
     count = cursor.fetchone()[0]
-
     print(f"{table:<15} {count:>10,}")
 
 
 # ============================================================
-# COMMIT
+# COMMIT & CLOSE
 # ============================================================
 
 conn.commit()
-
-print("\nData loaded successfully!")
-print("Transaction committed.")
-
-
-# ============================================================
-# CLOSE CONNECTION
-# ============================================================
+print("\nData loaded successfully! Transaction committed.")
 
 cursor.close()
 conn.close()
-
 print("PostgreSQL connection closed.")

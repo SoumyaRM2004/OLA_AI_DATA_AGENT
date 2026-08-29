@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OLA AI Data Agent — Intelligent Mobility Analytics</title>
+    <title>OLA AI Data Agent — Intelligent Mobility Analytics & Weather ETL</title>
     
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -53,8 +53,8 @@
                     <span>Database Explorer</span>
                 </button>
                 <button class="nav-item" data-tab="etl-view">
-                    <i data-lucide="workflow"></i>
-                    <span>ETL Studio</span>
+                    <i data-lucide="cloud-sun"></i>
+                    <span>Weather ETL Studio</span>
                 </button>
                 <button class="nav-item" data-tab="architecture-view">
                     <i data-lucide="network"></i>
@@ -67,7 +67,7 @@
                     <div class="status-indicator online"></div>
                     <div class="status-info">
                         <span class="status-title">PostgreSQL Ready</span>
-                        <span class="status-sub" id="sidebar-db-status">Connected to OLA DB</span>
+                        <span class="status-sub" id="sidebar-db-status">6 Tables (Rides + Weather)</span>
                     </div>
                 </div>
             </div>
@@ -79,7 +79,7 @@
             <header class="top-header">
                 <div class="header-left">
                     <h1 id="page-title">AI Chat Studio</h1>
-                    <p id="page-description">Ask natural language questions to query the PostgreSQL database or trigger ETL pipelines.</p>
+                    <p id="page-description">Ask natural language questions to query OLA ride data, correlate with Open-Meteo weather, or trigger ETL pipelines.</p>
                 </div>
                 <div class="header-right">
                     <div class="badge-tag">
@@ -99,11 +99,12 @@
                     <!-- Suggested Query Chips -->
                     <div class="query-chips">
                         <span class="chips-label"><i data-lucide="sparkles"></i> Try asking:</span>
-                        <button class="chip" data-prompt="What are the top 5 highest rated drivers?">🏆 Top 5 Drivers</button>
+                        <button class="chip" data-prompt="Does rainfall correlate with ride cancellations?">🌦️ Rain vs. Cancellations</button>
+                        <button class="chip" data-prompt="Compare average surge multiplier during rainy and non-rainy periods">📈 Surge in Rainy Periods</button>
+                        <button class="chip" data-prompt="What are the top 5 highest rated drivers with their average ratings?">🏆 Top 5 Drivers</button>
                         <button class="chip" data-prompt="Show total revenue grouped by payment method">💳 Revenue by Payment</button>
-                        <button class="chip" data-prompt="What is the distribution of ride statuses?">🚗 Ride Status Breakdown</button>
-                        <button class="chip" data-prompt="Show average ride fare and distance for completed rides">💰 Average Fare & Distance</button>
-                        <button class="chip" data-prompt="Extract data from https://pokeapi.co/api/v2/pokemon and save to data/extract as csv">⚡ Extract Pokémon API</button>
+                        <button class="chip" data-prompt="Show average rainfall and temperature by date from weather data">🌧️ Daily Weather Summary</button>
+                        <button class="chip" data-prompt="Extract weather data from https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code and save to data/extract as csv">⚡ Extract Open-Meteo</button>
                     </div>
 
                     <!-- Messages Stream -->
@@ -118,12 +119,12 @@
                                 </div>
                             </div>
                             <div class="message-body">
-                                <p>Hello! I am your AI Data Agent for the OLA Ride-Hailing platform. You can ask me:</p>
+                                <p>Welcome to the <strong>OLA Mobility Intelligence Platform</strong>! I am your AI Data Agent combining synthetic ride-hailing datasets with external <strong>Open-Meteo weather data</strong>.</p>
                                 <ul>
-                                    <li>📊 <strong>SQL Analytics</strong>: Query rides, fares, top drivers, payments, and ratings in natural language.</li>
-                                    <li>🔄 <strong>ETL Operations</strong>: Extract data from public APIs or run Pandas transformations on CSV/JSON/Parquet datasets.</li>
+                                    <li>📊 <strong>SQL Analytics</strong>: Query rides, fares, driver ratings, and correlate ride metrics with weather conditions (rain vs. cancellations, surge pricing).</li>
+                                    <li>🌦️ <strong>Weather & Mobility ETL</strong>: Extract live/historical hourly weather data from Open-Meteo and transform datasets using Pandas.</li>
                                 </ul>
-                                <p>Every SQL query is evaluated by a dedicated <strong>Security Judge</strong> before execution for safe read-only analytics!</p>
+                                <p>Every SQL query is evaluated by an automated <strong>Security Judge</strong> before execution for safe read-only analytics!</p>
                             </div>
                         </div>
                     </div>
@@ -136,7 +137,7 @@
                                 <input 
                                     type="text" 
                                     id="chat-input" 
-                                    placeholder="Ask anything about OLA rides, drivers, payments, or request an ETL extraction..."
+                                    placeholder="Ask anything about OLA rides, rain correlation, driver ratings, or request an ETL extraction..."
                                     autocomplete="off"
                                     required
                                 >
@@ -267,16 +268,16 @@
                     <!-- Extraction Box -->
                     <div class="etl-card">
                         <div class="etl-card-header">
-                            <div class="etl-icon emerald"><i data-lucide="download-cloud"></i></div>
+                            <div class="etl-icon emerald"><i data-lucide="cloud-rain"></i></div>
                             <div>
-                                <h3>API Data Extractor</h3>
-                                <p>Extract structured JSON from any REST endpoint and save as CSV, JSON, or Parquet.</p>
+                                <h3>Weather & Mobility API Extractor</h3>
+                                <p>Extract structured hourly weather from Open-Meteo or any external REST API into CSV, JSON, or Parquet.</p>
                             </div>
                         </div>
                         <form id="etl-extract-form" class="etl-form">
                             <div class="form-group">
-                                <label>API Endpoint URL</label>
-                                <input type="url" id="extract-url" value="https://pokeapi.co/api/v2/pokemon" required>
+                                <label>API Endpoint URL (Open-Meteo Example)</label>
+                                <input type="url" id="extract-url" value="https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code" required>
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
@@ -293,7 +294,7 @@
                                 </div>
                             </div>
                             <button type="submit" class="btn-primary" id="btn-run-extract">
-                                <i data-lucide="play"></i> Run Extraction
+                                <i data-lucide="play"></i> Extract Weather Data
                             </button>
                         </form>
                         <div id="extract-output" class="etl-output-box"></div>
@@ -305,17 +306,17 @@
                             <div class="etl-icon cyan"><i data-lucide="cpu"></i></div>
                             <div>
                                 <h3>Natural Language Transformer</h3>
-                                <p>Describe transformations in plain English. The agent writes and executes Pandas code.</p>
+                                <p>Describe transformations in plain English (e.g. filter rainy hours, compute temperature averages). The agent generates and runs Pandas code.</p>
                             </div>
                         </div>
                         <form id="etl-transform-form" class="etl-form">
                             <div class="form-group">
                                 <label>Input File Path</label>
-                                <input type="text" id="transform-file" value="data/extract/extracted_data.csv" required>
+                                <input type="text" id="transform-file" value="data/extract/weather_data.csv" required>
                             </div>
                             <div class="form-group">
                                 <label>Transformation Requirement</label>
-                                <textarea id="transform-prompt" rows="3" placeholder="e.g., Filter rows where name starts with 'p' and add a timestamp column" required></textarea>
+                                <textarea id="transform-prompt" rows="3" placeholder="e.g., Filter rows where rain_mm > 0 and calculate average temperature during rainfall" required></textarea>
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
@@ -342,8 +343,11 @@
                 <!-- Existing Files Preview -->
                 <div class="files-preview-section">
                     <div class="table-card-header">
-                        <h3><i data-lucide="folder-open"></i> Extracted & Transformed Files Explorer</h3>
-                        <button class="btn-refresh" id="refresh-files-btn"><i data-lucide="rotate-cw"></i> Refresh Files</button>
+                        <h3><i data-lucide="folder-open"></i> Extracted & Transformed Datasets</h3>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="btn-refresh" id="load-to-db-btn"><i data-lucide="upload-cloud"></i> Load to PostgreSQL (weather_data)</button>
+                            <button class="btn-refresh" id="refresh-files-btn"><i data-lucide="rotate-cw"></i> Refresh Files</button>
+                        </div>
                     </div>
                     <div id="files-list-wrapper" class="files-chips"></div>
                     <div id="file-preview-table-wrapper" class="table-responsive" style="margin-top: 15px;"></div>
@@ -354,20 +358,20 @@
             <section id="architecture-view" class="tab-pane">
                 <div class="arch-container">
                     <div class="arch-card">
-                        <h3><i data-lucide="git-branch"></i> Multi-Agent Orchestration Flow</h3>
-                        <p>The system uses <strong>LangGraph</strong> to route user intent to specialized sub-agents with stateful transitions.</p>
+                        <h3><i data-lucide="git-branch"></i> Multi-Agent Orchestration & External Data Pipeline</h3>
+                        <p>The system uses <strong>LangGraph</strong> to route user intent between database analytics and external weather data enrichment.</p>
                         
                         <div class="pipeline-flow">
                             <div class="flow-step">
                                 <div class="step-num">1</div>
                                 <h4>Router Node</h4>
-                                <p>Uses Gemini with Structured Output (<code>RouterSchema</code>) to classify query as SQL or ETL.</p>
+                                <p>Classifies user intent (SQL Analytics vs. Weather/API ETL).</p>
                             </div>
                             <div class="flow-arrow"><i data-lucide="arrow-right"></i></div>
                             <div class="flow-step">
                                 <div class="step-num">2</div>
                                 <h4>Specialist Agent</h4>
-                                <p><strong>SQL Analyst:</strong> Schema enrichment & SQL generation.<br><strong>ETL Analyst:</strong> API extract & Pandas tool binding.</p>
+                                <p><strong>SQL Analyst:</strong> Schema enrichment & SQL generation.<br><strong>ETL Analyst:</strong> Open-Meteo API extraction & Pandas tools.</p>
                             </div>
                             <div class="flow-arrow"><i data-lucide="arrow-right"></i></div>
                             <div class="flow-step">
@@ -379,7 +383,7 @@
                             <div class="flow-step">
                                 <div class="step-num">4</div>
                                 <h4>Synthesizer & Charts</h4>
-                                <p>Generates natural language answer, tabular data, and auto-detects chart configurations.</p>
+                                <p>Synthesizes insights (e.g. rain vs. cancellations) with auto-generated Chart.js visualizations.</p>
                             </div>
                         </div>
                     </div>
@@ -388,10 +392,10 @@
                         <div class="arch-card">
                             <h3><i data-lucide="shield-alert"></i> SQL Security Judge Policy</h3>
                             <ul class="security-list">
-                                <li><i data-lucide="check-circle" class="text-green"></i> <strong>Allowed:</strong> <code>SELECT</code>, <code>WITH</code>, aggregations, joins, subqueries</li>
+                                <li><i data-lucide="check-circle" class="text-green"></i> <strong>Allowed:</strong> <code>SELECT</code>, <code>WITH</code>, aggregations, cross-table joins</li>
                                 <li><i data-lucide="x-circle" class="text-red"></i> <strong>Blocked:</strong> <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>DROP</code></li>
                                 <li><i data-lucide="x-circle" class="text-red"></i> <strong>Blocked:</strong> <code>ALTER</code>, <code>TRUNCATE</code>, <code>CREATE</code>, <code>GRANT</code>, <code>REVOKE</code></li>
-                                <li><i data-lucide="shield" class="text-cyan"></i> <strong>Execution:</strong> Transactions auto-rollback on non-select triggers</li>
+                                <li><i data-lucide="shield" class="text-cyan"></i> <strong>Execution:</strong> Read-only transactions with rollback guard</li>
                             </ul>
                         </div>
 

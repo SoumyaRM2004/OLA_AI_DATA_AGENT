@@ -1,7 +1,9 @@
 import os
 import psycopg2
 from psycopg2 import sql
+from psycopg2.extras import execute_values
 from typing import Dict, Any, List, Optional
+import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -179,6 +181,69 @@ class DatabaseConnection:
                 "row_count": 0,
                 "error": str(e)
             }
+        finally:
+            if cursor:
+                cursor.close()
+
+    def load_dataframe(self, df: pd.DataFrame, table_name: str = "weather_data") -> Dict[str, Any]:
+        """
+        Loads a pandas DataFrame into a PostgreSQL table using safe, parameterized execute_values.
+        """
+        connection = self.get_connection()
+        if not connection:
+            return {"success": False, "error": "Database connection not available."}
+
+        cursor = None
+        try:
+            cursor = connection.cursor()
+
+            # Ensure table exists for weather_data
+            if table_name == "weather_data":
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS public.weather_data (
+                        weather_id SERIAL PRIMARY KEY,
+                        recorded_at TIMESTAMP NOT NULL,
+                        city VARCHAR(100),
+                        latitude DECIMAL(9,6),
+                        longitude DECIMAL(9,6),
+                        temperature_c DECIMAL(5,2),
+                        precipitation_mm DECIMAL(6,2),
+                        rain_mm DECIMAL(6,2),
+                        weather_code INTEGER,
+                        is_rainy BOOLEAN
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_weather_recorded_at ON public.weather_data(recorded_at);
+                    CREATE INDEX IF NOT EXISTS idx_weather_city ON public.weather_data(city);
+                """)
+
+            # Prepare columns and records
+            cols = [c for c in df.columns if c != "weather_id"]
+            records = [tuple(x) for x in df[cols].to_numpy()]
+
+            insert_query = sql.SQL("INSERT INTO {}.{} ({}) VALUES %s").format(
+                sql.Identifier("public"),
+                sql.Identifier(table_name),
+                sql.SQL(", ").join(sql.Identifier(col) for col in cols)
+            )
+
+            execute_values(cursor, insert_query.as_string(connection), records)
+            connection.commit()
+
+            return {
+                "success": True,
+                "rows_inserted": len(records),
+                "table": table_name,
+                "error": None
+            }
+
+        except Exception as e:
+            if connection:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+            print(f"Error loading DataFrame to {table_name}: {e}")
+            return {"success": False, "error": str(e), "rows_inserted": 0}
         finally:
             if cursor:
                 cursor.close()

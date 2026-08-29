@@ -764,6 +764,33 @@ function initEtlStudio() {
         });
     }
 
+    let activePreviewFile = "data/extract/weather_data.csv";
+
+    const loadToDbBtn = document.getElementById('load-to-db-btn');
+    if (loadToDbBtn) {
+        loadToDbBtn.addEventListener('click', async () => {
+            loadToDbBtn.disabled = true;
+            loadToDbBtn.innerHTML = '<div class="loading-spinner"></div> Loading into PostgreSQL...';
+            try {
+                const targetFile = activePreviewFile || 'data/extract/weather_data.csv';
+                const res = await fetch('/api/etl/load-db', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_path: targetFile, table_name: 'weather_data' })
+                });
+                const data = await res.json();
+                alert(data.message || 'Dataset loaded into PostgreSQL!');
+                loadDbSchema();
+            } catch (err) {
+                alert('Database Load Error: ' + err.message);
+            } finally {
+                loadToDbBtn.disabled = false;
+                loadToDbBtn.innerHTML = '<i data-lucide="upload-cloud"></i> Load to PostgreSQL (weather_data)';
+                if (window.lucide) lucide.createIcons();
+            }
+        });
+    }
+
     if (refreshFilesBtn) {
         refreshFilesBtn.addEventListener('click', loadDataFiles);
     }
@@ -788,7 +815,10 @@ async function loadDataFiles() {
             const btn = document.createElement('button');
             btn.className = 'file-chip-btn';
             btn.innerHTML = `<i data-lucide="file-text"></i> ${f.relative_path} <span style="color: var(--text-dim);">(${f.size_kb} KB)</span>`;
-            btn.addEventListener('click', () => previewFileContent(f.relative_path));
+            btn.addEventListener('click', () => {
+                activePreviewFile = f.relative_path;
+                previewFileContent(f.relative_path);
+            });
             listWrapper.appendChild(btn);
         });
 
@@ -796,6 +826,7 @@ async function loadDataFiles() {
 
         // Preview the first file
         if (files.length > 0) {
+            activePreviewFile = files[0].relative_path;
             previewFileContent(files[0].relative_path);
         }
     } catch (err) {

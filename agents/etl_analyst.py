@@ -25,11 +25,12 @@ from langchain.tools import tool
 @tool
 def extract_load_tool(url: str, output_folder: str = "data/extract", output_format: str = "csv") -> str:
     """
-    Extracts data from the given API endpoint and loads it into the desired folder in CSV, JSON, or Parquet format.
+    Extracts data from an external API (such as Open-Meteo Weather API or any REST endpoint)
+    and saves it to the specified folder in CSV, JSON, or Parquet format.
     
     Args:
         url: The API URL endpoint.
-        output_folder: The directory to save the file into (e.g. data/extract).
+        output_folder: The directory to save the file into (default: data/extract).
         output_format: 'csv', 'json', or 'parquet'.
     """
     etl_tools = ETLTools()
@@ -38,15 +39,21 @@ def extract_load_tool(url: str, output_folder: str = "data/extract", output_form
 
 
 @tool
-def transform_load_tool(input_file_path: str, output_folder: str = "data/transform", output_format: str = "csv", user_question: str = "") -> str:
+def transform_load_tool(
+    input_file_path: str,
+    output_folder: str = "data/transform",
+    output_format: str = "csv",
+    user_question: str = ""
+) -> str:
     """
-    Transforms data from an existing file and saves it to the output folder.
+    Transforms data from an existing dataset file (e.g. weather data, ride data) using Pandas
+    and saves the transformed dataset to the output folder.
     
     Args:
-        input_file_path: Path to the raw data file (e.g. data/extract/extracted_data.csv).
-        output_folder: Directory to save transformed data.
+        input_file_path: Path to the raw data file (e.g. data/extract/weather_data.csv).
+        output_folder: Directory to save transformed data (default: data/transform).
         output_format: 'csv', 'json', or 'parquet'.
-        user_question: Specific filtering or transformation requirement.
+        user_question: Specific filtering, cleaning, or aggregation requirement.
     """
     etl_tools = ETLTools()
     top_3_rows = etl_tools.transform_load_context(input_file_path)
@@ -59,7 +66,7 @@ Write ONLY executable Python code (using pandas as pd and os) that performs the 
 RULES:
 1. Load dataset from: '{input_file_path}'
 2. Perform transformation: '{user_question}'
-3. Save result to directory: '{output_folder}' with format '{output_format}' (e.g., 'transformed_data.{output_format}')
+3. Save result to directory: '{output_folder}' with format '{output_format}' (e.g., 'weather_transformed.{output_format}')
 4. Ensure os.makedirs('{output_folder}', exist_ok=True) is called.
 5. Return ONLY python code without markdown fences, explanation, or comments.
 
@@ -86,7 +93,22 @@ Dataset Context:
     return f"Transformation complete.\n\nGenerated Code:\n```python\n{pandas_code}\n```\n\nExecution Log:\n{results}"
 
 
-tools = [extract_load_tool, transform_load_tool]
+@tool
+def load_to_postgres_tool(file_path: str = "data/extract/weather_data.csv", table_name: str = "weather_data") -> str:
+    """
+    Loads an extracted or transformed CSV/JSON dataset into a PostgreSQL database table (e.g. weather_data)
+    for subsequent SQL analysis and cross-table joins.
+    
+    Args:
+        file_path: Path to the dataset file to load.
+        table_name: Target PostgreSQL table name (default: weather_data).
+    """
+    etl_tools = ETLTools()
+    result = etl_tools.load_to_database(file_path, table_name)
+    return result
+
+
+tools = [extract_load_tool, transform_load_tool, load_to_postgres_tool]
 llm = pick_llm("gemini")
 llm_bind = llm.bind_tools(tools)
 
@@ -96,7 +118,11 @@ llm_bind = llm.bind_tools(tools)
 def llm_node(state: EtlAgentSchema):
     messages = state.messages
     prompt = f"""
-You are an ETL Data Analyst with tools to extract API data and transform local datasets.
+You are an ETL Data Analyst for an OLA-inspired mobility platform with tools to:
+1. Extract external API data (such as Open-Meteo Weather data or other open data endpoints).
+2. Transform datasets using Pandas.
+3. Load extracted datasets into PostgreSQL tables (like weather_data) for cross-table analytics.
+
 Given the user request, call the appropriate tool with the right parameters.
 
 Chat History:
@@ -160,7 +186,7 @@ if __name__ == "__main__":
     test_req = {
         "messages": [
             HumanMessage(
-                content="Extract data from https://pokeapi.co/api/v2/pokemon and save to data/extract as csv"
+                content="Extract weather data from https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code and save to data/extract as csv"
             )
         ]
     }

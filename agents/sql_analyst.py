@@ -26,10 +26,10 @@ def curate_ques(state: AgentSchema) -> AgentSchema:
     llm = pick_llm("low")
 
     prompt = f"""
-You are a question-curation assistant for an SQL data analyst.
+You are a question-curation assistant for an SQL data analyst in an OLA-inspired mobility platform.
 
-Rewrite the user's question into a clear, precise, and unambiguous question
-that can be answered using an SQL database.
+Rewrite the user's question into a clear, precise, and unambiguous analytical question
+that can be answered using an SQL database containing rides, drivers, vehicles, payments, ratings, and weather data.
 
 Do not answer the question.
 Do not generate SQL.
@@ -63,7 +63,7 @@ def prompt_query_context(state: AgentSchema) -> AgentSchema:
     schema_info = db.schema_details("public")
 
     prompt = f"""
-You are an expert SQL Data Analyst Agent.
+You are an expert SQL Data Analyst Agent for an OLA-inspired mobility and ride-hailing data platform.
 
 Your task is to convert the user's natural-language question
 into a valid PostgreSQL SQL query based strictly on the provided schema.
@@ -71,16 +71,32 @@ into a valid PostgreSQL SQL query based strictly on the provided schema.
 DATABASE SCHEMA:
 {schema_info}
 
+TABLES OVERVIEW:
+- users: rider and driver profiles, city, signup date, active status.
+- vehicles: driver vehicle details, make, model, year, license plate.
+- rides: ride details (requested_at, pickup_time, dropoff_time, fare, distance_km, surge_multiplier, status, cancellation_reason).
+- payments: payment method, amount, payment status, transaction id.
+- ratings: trip ratings (1-5), comments.
+- weather_data: hourly external weather recordings (recorded_at, city, temperature_c, precipitation_mm, rain_mm, is_rainy, weather_code).
+
+WEATHER & RIDE JOIN GUIDELINES:
+- To correlate rides with weather, join on hourly timestamp:
+  JOIN public.weather_data w ON DATE_TRUNC('hour', rides.requested_at) = w.recorded_at
+  OR on date: rides.requested_at::date = w.recorded_at::date
+- For cancellation correlation: calculate total rides, cancelled rides, and cancellation percentage:
+  ROUND((SUM(CASE WHEN rides.status = 'cancelled' THEN 1 ELSE 0 END)::numeric / NULLIF(COUNT(rides.ride_id), 0)) * 100, 2) AS cancellation_rate_pct
+- For surge multiplier correlation: compute AVG(rides.surge_multiplier) grouped by w.is_rainy or weather condition.
+
 IMPORTANT RULES:
 1. Generate valid PostgreSQL SQL.
 2. Use ONLY tables and columns that exist in the schema.
 3. Do NOT invent table names or column names.
-4. Use appropriate JOINs between tables (users, rides, vehicles, payments, ratings).
+4. Use appropriate JOINs between tables.
 5. If the user does not specify the number of rows, limit the result to 10 rows.
 6. Generate ONLY read-only SQL (SELECT or WITH).
 7. Do NOT generate: INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, GRANT, REVOKE.
 8. For text comparisons, use case-insensitive matching with ILIKE unless exact case is specified.
-9. Ensure column aliases are clean and readable for user display (e.g., AS total_rides, AS avg_fare).
+9. Ensure column aliases are clean and readable for user display (e.g., AS total_rides, AS avg_fare, AS cancellation_rate_pct).
 
 IMPORTANT OUTPUT RULE:
 - Return ONLY the final executable PostgreSQL SQL statement.
@@ -103,31 +119,37 @@ def generate_sql(state: AgentSchema) -> AgentSchema:
     llm = pick_llm("medium")
     response = llm.invoke(prompt)
 
-    generated_sql = response.content.strip()
+    raw_text = response.content.strip()
 
-    # Clean reasoning tags
-    generated_sql = re.sub(r"<think>.*?</think>", "", generated_sql, flags=re.DOTALL | re.IGNORECASE)
-    generated_sql = re.sub(r"</?think>", "", generated_sql, flags=re.IGNORECASE)
+    # 1. Clean reasoning tags if model output <think>
+    clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL | re.IGNORECASE)
+    clean_text = re.sub(r"</?think>", "", clean_text, flags=re.IGNORECASE).strip()
 
-    # Clean markdown fences
-    generated_sql = re.sub(r"```(?:sql)?", "", generated_sql, flags=re.IGNORECASE)
-    generated_sql = generated_sql.replace("```", "").strip()
-
-    # Find beginning of SELECT or WITH
-    sql_match = re.search(r"\b(?:SELECT|WITH)\b", generated_sql, flags=re.IGNORECASE)
-    if not sql_match:
-        # Fallback query if model failed
-        generated_sql = "SELECT 'Could not generate a valid SQL query' AS error;"
+    # 2. Prefer fenced code blocks if present
+    fences = re.findall(r"```(?:sql)?\s*([\s\S]*?)\s*```", clean_text, flags=re.IGNORECASE)
+    if fences:
+        # Take the last fenced block (which usually represents the final query)
+        candidate_sql = fences[-1].strip()
     else:
-        generated_sql = generated_sql[sql_match.start():].strip()
+        candidate_sql = clean_text
 
-    # Take first SQL statement
-    if ";" in generated_sql:
-        generated_sql = generated_sql.split(";", 1)[0] + ";"
+    # 3. Find the beginning of SELECT or WITH
+    sql_match = re.search(r"\b(?:SELECT|WITH)\b[\s\S]*", candidate_sql, flags=re.IGNORECASE)
+    if sql_match:
+        extracted_sql = sql_match.group(0).strip()
     else:
-        generated_sql = generated_sql + ";"
+        extracted_sql = candidate_sql
 
-    state.generated_sql_query = generated_sql.strip()
+    # 4. If there is a semicolon terminating the statement, keep up to that semicolon
+    if ";" in extracted_sql:
+        extracted_sql = extracted_sql.split(";", 1)[0] + ";"
+    else:
+        extracted_sql = extracted_sql + ";"
+
+    # Final cleanup of markdown ticks
+    extracted_sql = extracted_sql.replace("```", "").strip()
+
+    state.generated_sql_query = extracted_sql
     return state
 
 
@@ -168,9 +190,9 @@ def is_safe_sql(state: AgentSchema) -> AgentSchema:
     llm = pick_llm("high")
 
     prompt = f"""
-You are an SQL Security Judge.
+You are an SQL Security Judge for a PostgreSQL database.
 
-Your task is to determine whether the generated SQL query is safe to execute on a PostgreSQL database.
+Your task is to determine whether the generated SQL query is safe to execute.
 
 A query is SAFE only when it performs read-only data retrieval (SELECT, WITH).
 
@@ -262,18 +284,23 @@ def represent_final_answer(state: AgentSchema) -> AgentSchema:
         state.messages = state.messages + [AIMessage(content=state.final_answer)]
         return state
 
+    if not state.data_rows:
+        state.final_answer = f"No records found in the database matching the criteria for '{curated_question}'."
+        state.messages = state.messages + [AIMessage(content=state.final_answer)]
+        return state
+
     llm = pick_llm("low")
 
     prompt = f"""
-You are an SQL Data Analyst assistant.
+You are an SQL Data Analyst assistant for an OLA-inspired mobility platform.
 
 The user asked: "{curated_question}"
 Database returned: {execution_result}
 
 Your task is to present this data in a clear, well-structured, natural language response.
-- Highlight key insights directly.
-- If there are multiple items, format them nicely with bullet points or summary points.
-- Do not make up any numbers.
+- Highlight key insights directly with exact numbers from the data.
+- When presenting weather vs ride metrics, express results in terms of **observed correlations** (e.g., "The data shows that during rainy periods..."). Avoid claiming direct causality.
+- Format multi-row results neatly with bullet points or summary highlights.
 
 Provide a concise and helpful answer:
 """
@@ -328,7 +355,7 @@ sql_analyst = sql_agent_graph.compile()
 if __name__ == "__main__":
     test_input = {
         "messages": [],
-        "user_question": "Show top 5 drivers with best ratings",
+        "user_question": "Does rainfall correlate with ride cancellations?",
         "curated_ques": "",
         "Prompt_query_context": "",
         "generated_sql_query": "",
@@ -341,5 +368,4 @@ if __name__ == "__main__":
     print("\n--- SQL Analyst Result ---")
     print("SQL:", res.get("generated_sql_query"))
     print("Safe:", res.get("is_safe"))
-    print("Columns:", res.get("data_columns"))
     print("Final Answer:", res.get("final_answer"))
