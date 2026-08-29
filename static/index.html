@@ -420,7 +420,7 @@
                         <div class="import-header-icon"><i data-lucide="file-spreadsheet"></i></div>
                         <div class="import-header-info">
                             <h3>Mobility CSV Dataset Importer</h3>
-                            <p>Upload and validate compatible CSV datasets for the 5 core mobility tables: <strong>Users, Vehicles, Rides, Payments, Ratings</strong>. Datasets are validated against platform schemas before transactional database loading.</p>
+                            <p>Upload a CSV matching one of the supported OLA mobility datasets: <strong>Users, Vehicles, Rides, Payments, Ratings</strong>. The selected Dataset Type determines the validation schema before transactional database loading.</p>
                         </div>
                         <div class="import-badges">
                             <span class="schema-badge"><i data-lucide="shield-check"></i> Duplicate PK Guard</span>
@@ -436,20 +436,20 @@
                                 <div class="etl-icon emerald"><i data-lucide="upload-cloud"></i></div>
                                 <div>
                                     <h3>Upload & Validate CSV</h3>
-                                    <p>Select a CSV file to validate its structure, column mappings, and primary keys.</p>
+                                    <p>Select the dataset type and choose any CSV file to validate against the schema.</p>
                                 </div>
                             </div>
 
                             <form id="import-upload-form" class="etl-form">
                                 <div class="form-group">
-                                    <label>Target Dataset (Optional / Auto-detect)</label>
-                                    <select id="import-target-table">
-                                        <option value="">Auto-detect from columns</option>
-                                        <option value="users">Users (user_id, first_name, last_name, email...)</option>
-                                        <option value="vehicles">Vehicles (vehicle_id, driver_id, license_plate...)</option>
-                                        <option value="rides">Rides (ride_id, rider_id, driver_id, requested_at, fare...)</option>
-                                        <option value="payments">Payments (payment_id, ride_id, user_id, amount...)</option>
-                                        <option value="ratings">Ratings (rating_id, ride_id, rider_id, driver_id, rating...)</option>
+                                    <label>Dataset Type <span style="color: var(--accent-red);">*</span></label>
+                                    <select id="import-target-table" required>
+                                        <option value="" disabled selected>-- Select Dataset Type --</option>
+                                        <option value="users">Users</option>
+                                        <option value="vehicles">Vehicles</option>
+                                        <option value="rides">Rides</option>
+                                        <option value="payments">Payments</option>
+                                        <option value="ratings">Ratings</option>
                                     </select>
                                 </div>
 

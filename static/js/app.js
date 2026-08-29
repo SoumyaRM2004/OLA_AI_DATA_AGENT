@@ -1202,19 +1202,22 @@ function initDataImport() {
         }
 
         const file = fileInput.files[0];
-        const targetTable = targetSelect.value;
+        const datasetType = targetSelect.value;
+
+        if (!datasetType) {
+            alert('Please select a Dataset Type (Users, Vehicles, Rides, Payments, or Ratings).');
+            return;
+        }
 
         btnValidate.disabled = true;
         btnValidate.innerHTML = '<div class="loading-spinner"></div> Validating Dataset Schema & PKs...';
         validationOutput.style.display = 'block';
-        validationOutput.innerHTML = '<p class="loading-text">Validating column mappings, primary key uniqueness, and non-empty fields...</p>';
+        validationOutput.innerHTML = '<p class="loading-text">Validating column mappings, primary key uniqueness, and non-empty fields against the selected schema...</p>';
 
         try {
             const formData = new FormData();
             formData.append('file', file);
-            if (targetTable) {
-                formData.append('target_table', targetTable);
-            }
+            formData.append('dataset_type', datasetType);
 
             const res = await fetch('/api/import/validate', {
                 method: 'POST',

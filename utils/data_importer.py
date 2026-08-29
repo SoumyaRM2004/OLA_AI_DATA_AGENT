@@ -85,39 +85,19 @@ TABLE_SCHEMAS: Dict[str, Dict[str, Any]] = {
 }
 
 
-def identify_dataset_by_columns(columns: List[str]) -> Optional[str]:
-    """
-    Identifies the dataset type based on its column names.
-    Does NOT guess or use AI inference; checks for exact canonical schema markers.
-    """
-    cols_set = set(c.strip().lower() for c in columns)
-
-    if {"user_id", "first_name", "last_name", "email"}.issubset(cols_set):
-        return "users"
-    if {"vehicle_id", "driver_id", "license_plate"}.issubset(cols_set):
-        return "vehicles"
-    if {"ride_id", "requested_at", "fare", "status"}.issubset(cols_set):
-        return "rides"
-    if {"payment_id", "payment_method", "amount"}.issubset(cols_set):
-        return "payments"
-    if {"rating_id", "rating", "rated_at"}.issubset(cols_set) or {"rating_id", "rating", "driver_id"}.issubset(cols_set):
-        return "ratings"
-
-    return None
-
-
 def validate_csv_content(
     file_bytes: bytes,
     filename: str,
-    explicit_table: Optional[str] = None
+    dataset_type: str
 ) -> Tuple[bool, Optional[pd.DataFrame], Optional[str], List[str], List[str]]:
     """
-    Validates an uploaded CSV file against OLA platform schema requirements.
+    Validates an uploaded CSV file strictly against the user-selected dataset type schema.
+    No automatic column guessing, AI inference, or filename guessing is performed.
     
     Checks:
     1. Valid CSV syntax and non-empty content.
-    2. Dataset type determination (explicit or column-matching).
-    3. Presence of all required columns.
+    2. Validated selection of one of the 5 supported dataset types (Users, Vehicles, Rides, Payments, Ratings).
+    3. Presence of all required columns for the selected schema.
     4. Absence of duplicate primary key values.
     5. Absence of null/missing values in required fields.
     
@@ -127,7 +107,17 @@ def validate_csv_content(
     errors: List[str] = []
     warnings: List[str] = []
 
-    # 1. Validate file extension and basic content
+    # 1. Validate dataset type parameter
+    table_name = (dataset_type or "").lower().strip()
+    valid_types = list(TABLE_SCHEMAS.keys())
+    if not table_name or table_name not in TABLE_SCHEMAS:
+        errors.append(
+            f"Dataset Type selection is required. Please select one of: "
+            f"{', '.join([s['label'] for s in TABLE_SCHEMAS.values()])}."
+        )
+        return False, None, None, errors, warnings
+
+    # 2. Validate file extension and basic content
     if not filename.lower().endswith(".csv"):
         errors.append(f"Invalid file format for '{filename}'. Only CSV files (.csv) are supported.")
         return False, None, None, errors, warnings
@@ -136,7 +126,7 @@ def validate_csv_content(
         errors.append(f"Uploaded file '{filename}' is empty.")
         return False, None, None, errors, warnings
 
-    # 2. Parse CSV into DataFrame
+    # 3. Parse CSV into DataFrame
     try:
         df = pd.read_csv(io.BytesIO(file_bytes))
     except Exception as e:
@@ -151,27 +141,15 @@ def validate_csv_content(
     df.columns = [str(c).strip().lower() for c in df.columns]
     cols = list(df.columns)
 
-    # 3. Determine table type
-    table_name = (explicit_table or "").lower().strip()
-    if not table_name or table_name not in TABLE_SCHEMAS:
-        identified = identify_dataset_by_columns(cols)
-        if not identified:
-            errors.append(
-                f"Could not identify dataset type for '{filename}'. "
-                f"Columns provided: {cols[:8]}. Please select the target dataset type explicitly."
-            )
-            return False, None, None, errors, warnings
-        table_name = identified
-
     schema = TABLE_SCHEMAS[table_name]
     pk = schema["primary_key"]
     req_cols = schema["required_columns"]
 
-    # 4. Validate required columns exist
+    # 4. Validate required columns exist for the selected schema
     missing_req = [c for c in req_cols if c not in cols]
     if missing_req:
         errors.append(
-            f"'{table_name}' dataset is missing required column(s): {', '.join(missing_req)}"
+            f"'{schema['label']}' dataset is missing required column(s): {', '.join(missing_req)}"
         )
 
     # 5. Check for duplicate primary keys

@@ -274,17 +274,17 @@ async def get_import_schema_info():
 @app.post("/api/import/validate")
 async def validate_import_file(
     file: UploadFile = File(...),
-    target_table: Optional[str] = Form(None)
+    dataset_type: str = Form(...)
 ):
     """
-    Validates an uploaded CSV file against OLA platform schemas.
+    Validates an uploaded CSV file strictly against the selected OLA mobility schema.
     Checks columns, duplicate primary keys, null values, and returns preview records.
     """
     file_bytes = await file.read()
     is_valid, df, table_name, errors, warnings = validate_csv_content(
         file_bytes=file_bytes,
         filename=file.filename,
-        explicit_table=target_table
+        dataset_type=dataset_type
     )
 
     sample_records = []
