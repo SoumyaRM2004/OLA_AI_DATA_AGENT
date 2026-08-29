@@ -56,6 +56,10 @@
                     <i data-lucide="cloud-sun"></i>
                     <span>Weather ETL Studio</span>
                 </button>
+                <button class="nav-item" data-tab="import-view">
+                    <i data-lucide="upload-cloud"></i>
+                    <span>Data Import</span>
+                </button>
                 <button class="nav-item" data-tab="architecture-view">
                     <i data-lucide="network"></i>
                     <span>Agent Architecture</span>
@@ -96,9 +100,26 @@
             <!-- TAB 1: AI CHAT STUDIO -->
             <section id="chat-view" class="tab-pane active">
                 <div class="chat-container">
+                    <!-- Chat Management Toolbar -->
+                    <div class="chat-toolbar">
+                        <div class="chat-toolbar-left">
+                            <span class="chips-label"><i data-lucide="sparkles"></i> Try asking:</span>
+                        </div>
+                        <div class="chat-toolbar-actions">
+                            <button id="btn-new-chat" class="btn-chat-action" title="Start a fresh conversation">
+                                <i data-lucide="plus-circle"></i> <span>New Chat</span>
+                            </button>
+                            <button id="btn-clear-chat" class="btn-chat-action" title="Clear saved chat history">
+                                <i data-lucide="trash-2"></i> <span>Clear History</span>
+                            </button>
+                            <button id="btn-export-chat" class="btn-chat-action" title="Export conversation as JSON">
+                                <i data-lucide="download"></i> <span>Export Chat</span>
+                            </button>
+                        </div>
+                    </div>
+
                     <!-- Suggested Query Chips -->
                     <div class="query-chips">
-                        <span class="chips-label"><i data-lucide="sparkles"></i> Try asking:</span>
                         <button class="chip" data-prompt="Compare ride cancellation rates during rainy and non-rainy periods.">🌦️ Rain vs. Cancellations</button>
                         <button class="chip" data-prompt="Compare average surge multiplier during rainy and non-rainy periods.">📈 Surge in Rainy Periods</button>
                         <button class="chip" data-prompt="Compare average rainfall across the 8 cities.">🌧️ Rainfall Across 8 Cities</button>
@@ -388,6 +409,121 @@
                     </div>
                     <div id="files-list-wrapper" class="files-chips"></div>
                     <div id="file-preview-table-wrapper" class="table-responsive" style="margin-top: 15px;"></div>
+                </div>
+            </section>
+
+            <!-- TAB: DATA IMPORT -->
+            <section id="import-view" class="tab-pane">
+                <div class="import-container">
+                    <!-- Top Info Card -->
+                    <div class="import-header-card">
+                        <div class="import-header-icon"><i data-lucide="file-spreadsheet"></i></div>
+                        <div class="import-header-info">
+                            <h3>Mobility CSV Dataset Importer</h3>
+                            <p>Upload and validate compatible CSV datasets for the 5 core mobility tables: <strong>Users, Vehicles, Rides, Payments, Ratings</strong>. Datasets are validated against platform schemas before transactional database loading.</p>
+                        </div>
+                        <div class="import-badges">
+                            <span class="schema-badge"><i data-lucide="shield-check"></i> Duplicate PK Guard</span>
+                            <span class="schema-badge"><i data-lucide="link"></i> Foreign Key Check</span>
+                            <span class="schema-badge"><i data-lucide="database"></i> Atomic Transaction</span>
+                        </div>
+                    </div>
+
+                    <div class="import-grid">
+                        <!-- Left: Upload & Validate Form -->
+                        <div class="etl-card">
+                            <div class="etl-card-header">
+                                <div class="etl-icon emerald"><i data-lucide="upload-cloud"></i></div>
+                                <div>
+                                    <h3>Upload & Validate CSV</h3>
+                                    <p>Select a CSV file to validate its structure, column mappings, and primary keys.</p>
+                                </div>
+                            </div>
+
+                            <form id="import-upload-form" class="etl-form">
+                                <div class="form-group">
+                                    <label>Target Dataset (Optional / Auto-detect)</label>
+                                    <select id="import-target-table">
+                                        <option value="">Auto-detect from columns</option>
+                                        <option value="users">Users (user_id, first_name, last_name, email...)</option>
+                                        <option value="vehicles">Vehicles (vehicle_id, driver_id, license_plate...)</option>
+                                        <option value="rides">Rides (ride_id, rider_id, driver_id, requested_at, fare...)</option>
+                                        <option value="payments">Payments (payment_id, ride_id, user_id, amount...)</option>
+                                        <option value="ratings">Ratings (rating_id, ride_id, rider_id, driver_id, rating...)</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>Select CSV File</label>
+                                    <div class="file-drop-area" id="file-drop-area">
+                                        <i data-lucide="file-up" class="drop-icon"></i>
+                                        <span id="file-drop-label">Drag & drop a CSV file here, or click to browse</span>
+                                        <input type="file" id="import-file-input" accept=".csv" required style="display: none;">
+                                    </div>
+                                    <div id="selected-file-name" class="selected-file-badge" style="display: none;"></div>
+                                </div>
+
+                                <button type="submit" class="btn-primary" id="btn-validate-csv">
+                                    <i data-lucide="check-circle"></i> Validate CSV Dataset
+                                </button>
+                            </form>
+
+                            <!-- Validation Feedback Output -->
+                            <div id="validation-output" class="validation-output-container" style="display: none; margin-top: 15px;"></div>
+                        </div>
+
+                        <!-- Right: Staged Datasets & Database Loading -->
+                        <div class="etl-card">
+                            <div class="etl-card-header">
+                                <div class="etl-icon cyan"><i data-lucide="database"></i></div>
+                                <div>
+                                    <h3>Staged Datasets & DB Load</h3>
+                                    <p>Validated datasets ready for atomic PostgreSQL loading in dependency order.</p>
+                                </div>
+                            </div>
+
+                            <div class="staged-summary-box">
+                                <div class="staged-table-wrapper">
+                                    <table class="data-table" id="staged-datasets-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Dataset</th>
+                                                <th>Rows</th>
+                                                <th>Status</th>
+                                                <th>Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="staged-datasets-body">
+                                            <tr>
+                                                <td colspan="4" class="text-muted" style="text-align: center; padding: 20px;">
+                                                    No datasets staged yet. Upload and validate a CSV file to begin.
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <div class="load-actions-row" style="margin-top: 20px; display: flex; gap: 10px;">
+                                    <button class="btn-primary" id="btn-load-database" disabled style="flex: 1;">
+                                        <i data-lucide="database"></i> Load into PostgreSQL (Atomic Transaction)
+                                    </button>
+                                    <button class="btn-refresh" id="btn-clear-staged" style="background: rgba(239, 68, 68, 0.15); color: var(--accent-red); border-color: rgba(239, 68, 68, 0.3);">
+                                        <i data-lucide="trash-2"></i> Clear Staged
+                                    </button>
+                                </div>
+
+                                <div id="load-db-output" class="etl-output-box" style="margin-top: 15px;"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Interactive Data Preview Section -->
+                    <div class="files-preview-section" id="import-preview-section" style="display: none; margin-top: 20px;">
+                        <div class="table-card-header">
+                            <h3 id="import-preview-title"><i data-lucide="table"></i> Staged Dataset Preview</h3>
+                        </div>
+                        <div id="import-preview-table-wrapper" class="table-responsive" style="margin-top: 15px;"></div>
+                    </div>
                 </div>
             </section>
 

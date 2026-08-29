@@ -1,7 +1,7 @@
 import os
 import sys
-from typing import Optional, Dict, Any
-from fastapi import FastAPI, HTTPException
+from typing import Optional, Dict, Any, List
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +15,12 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from utils.database import DatabaseConnection
 from utils.etl_tools import ETLTools
+from utils.data_importer import (
+    validate_csv_content,
+    validate_batch_foreign_keys,
+    load_datasets_transactional,
+    TABLE_SCHEMAS
+)
 from agents.data_agent import execute_agent_query
 
 app = FastAPI(
@@ -232,6 +238,132 @@ async def preview_file(path: str):
     etl = ETLTools()
     res = etl.preview_file(path, max_rows=20)
     return JSONResponse(content=res)
+
+
+# ------------------- DATA IMPORT ENDPOINTS -------------------
+
+class LoadImportRequest(BaseModel):
+    tables: Optional[List[str]] = None
+
+@app.get("/api/import/schema-info")
+async def get_import_schema_info():
+    """Returns metadata about expected columns and foreign keys for the 5 mobility datasets."""
+    return JSONResponse(content={"schemas": TABLE_SCHEMAS})
+
+
+@app.post("/api/import/validate")
+async def validate_import_file(
+    file: UploadFile = File(...),
+    target_table: Optional[str] = Form(None)
+):
+    """
+    Validates an uploaded CSV file against OLA platform schemas.
+    Checks columns, duplicate primary keys, null values, and returns preview records.
+    """
+    file_bytes = await file.read()
+    is_valid, df, table_name, errors, warnings = validate_csv_content(
+        file_bytes=file_bytes,
+        filename=file.filename,
+        explicit_table=target_table
+    )
+
+    sample_records = []
+    columns = []
+    row_count = 0
+
+    if df is not None:
+        row_count = len(df)
+        columns = list(df.columns)
+        # Top 5 records for UI table preview
+        sample_records = df.head(5).fillna("").to_dict(orient="records")
+
+        # Save to temporary staging directory if valid
+        if is_valid and table_name:
+            upload_dir = os.path.join(os.path.dirname(__file__), "data", "uploads")
+            os.makedirs(upload_dir, exist_ok=True)
+            staged_path = os.path.join(upload_dir, f"{table_name}_staged.csv")
+            df.to_csv(staged_path, index=False)
+
+    return JSONResponse(content={
+        "valid": is_valid,
+        "filename": file.filename,
+        "table_name": table_name,
+        "label": TABLE_SCHEMAS.get(table_name, {}).get("label", table_name) if table_name else "Unknown",
+        "row_count": row_count,
+        "columns": columns,
+        "sample_records": sample_records,
+        "errors": errors,
+        "warnings": warnings
+    })
+
+
+@app.post("/api/import/load")
+async def load_staged_imports(request: LoadImportRequest):
+    """
+    Loads validated and staged CSV datasets into PostgreSQL inside a single transaction.
+    """
+    upload_dir = os.path.join(os.path.dirname(__file__), "data", "uploads")
+    if not os.path.exists(upload_dir):
+        raise HTTPException(status_code=400, detail="No staged datasets found to load.")
+
+    # Determine tables to load
+    target_tables = request.tables if request.tables else list(TABLE_SCHEMAS.keys())
+    datasets: Dict[str, Any] = {}
+
+    import pandas as pd
+    for tbl in target_tables:
+        staged_path = os.path.join(upload_dir, f"{tbl}_staged.csv")
+        if os.path.exists(staged_path):
+            try:
+                df = pd.read_csv(staged_path)
+                datasets[tbl] = df
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to read staged '{tbl}' dataset: {e}")
+
+    if not datasets:
+        raise HTTPException(status_code=400, detail="No valid staged datasets selected for database loading.")
+
+    # 1. Validate foreign keys across batch
+    fk_valid, fk_errors, fk_warnings = validate_batch_foreign_keys(datasets)
+    if not fk_valid:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "error": "Foreign key integrity check failed.",
+                "errors": fk_errors,
+                "warnings": fk_warnings
+            }
+        )
+
+    # 2. Transactional Load into PostgreSQL
+    result = load_datasets_transactional(datasets)
+    
+    # 3. Clean up staged files on success
+    if result.get("success"):
+        for tbl in datasets.keys():
+            staged_path = os.path.join(upload_dir, f"{tbl}_staged.csv")
+            if os.path.exists(staged_path):
+                try:
+                    os.remove(staged_path)
+                except Exception:
+                    pass
+
+    return JSONResponse(content=result)
+
+
+@app.post("/api/import/clear-staged")
+async def clear_staged_imports():
+    """Clears all staged uploads."""
+    upload_dir = os.path.join(os.path.dirname(__file__), "data", "uploads")
+    if os.path.exists(upload_dir):
+        for f in os.listdir(upload_dir):
+            if f.endswith("_staged.csv"):
+                try:
+                    os.remove(os.path.join(upload_dir, f))
+                except Exception:
+                    pass
+    return JSONResponse(content={"message": "Staged imports cleared successfully."})
 
 
 # ------------------- STATIC FILES MOUNTING -------------------

@@ -8,10 +8,12 @@ document.addEventListener('DOMContentLoaded', () => {
     initDashboard();
     initDbExplorer();
     initEtlStudio();
+    initDataImport();
 });
 
 // Global state
 let activeChartInstances = {};
+const CHAT_STORAGE_KEY = 'ola_ai_data_agent_chat_v1';
 
 /* ==========================================================================
    1. NAVIGATION & TAB SWITCHING
@@ -25,7 +27,7 @@ function initNavigation() {
     const tabDescriptions = {
         'chat-view': {
             title: 'AI Chat Studio',
-            desc: 'Ask natural language questions to query the PostgreSQL database or trigger ETL pipelines.'
+            desc: 'Ask natural language questions to query OLA ride data, correlate with Open-Meteo weather, or trigger ETL pipelines.'
         },
         'overview-view': {
             title: 'Analytics KPI Dashboard',
@@ -36,8 +38,12 @@ function initNavigation() {
             desc: 'Inspect tables, columns, schemas, and live record previews from PostgreSQL.'
         },
         'etl-view': {
-            title: 'ETL Studio',
+            title: 'Weather ETL Studio',
             desc: 'Extract data from external APIs and transform datasets using natural language.'
+        },
+        'import-view': {
+            title: 'Mobility CSV Dataset Importer',
+            desc: 'Validate and import custom CSV datasets for Users, Vehicles, Rides, Payments, and Ratings with duplicate and foreign-key checks.'
         },
         'architecture-view': {
             title: 'Agent Architecture',
@@ -68,6 +74,8 @@ function initNavigation() {
                 loadDbSchema();
             } else if (targetTab === 'etl-view') {
                 loadDataFiles();
+            } else if (targetTab === 'import-view') {
+                refreshStagedTable();
             }
 
             // Re-render icons if needed
@@ -77,13 +85,80 @@ function initNavigation() {
 }
 
 /* ==========================================================================
-   2. AI CHAT STUDIO
+   2. AI CHAT STUDIO & PERSISTENCE
    ========================================================================== */
+
+function getChatHistory() {
+    try {
+        const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+        console.warn("Error reading chat history from localStorage:", e);
+        return [];
+    }
+}
+
+function saveChatHistory(history) {
+    try {
+        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(history));
+    } catch (e) {
+        console.warn("Error saving chat history to localStorage:", e);
+    }
+}
+
+function renderDefaultWelcomeMessage() {
+    const messagesArea = document.getElementById('messages-area');
+    messagesArea.innerHTML = `
+        <div class="message-card agent-message">
+            <div class="message-header">
+                <div class="avatar agent-avatar"><i data-lucide="bot"></i></div>
+                <div class="message-meta">
+                    <span class="sender-name">OLA AI Data Agent</span>
+                    <span class="message-time">Just now</span>
+                </div>
+            </div>
+            <div class="message-body">
+                <p>Welcome to the <strong>OLA Mobility Intelligence Platform</strong>! I am your AI Data Agent combining synthetic ride-hailing datasets with external <strong>Open-Meteo weather data across all 8 Canadian ride-hailing cities</strong>.</p>
+                <ul>
+                    <li>📊 <strong>SQL Analytics</strong>: Query rides, fares, driver ratings, and correlate ride metrics with weather conditions (rain vs. cancellations, surge pricing) across Calgary, Edmonton, Halifax, Montreal, Ottawa, Toronto, Vancouver, and Winnipeg.</li>
+                    <li>🌦️ <strong>Weather & Mobility ETL</strong>: Extract historical hourly weather data for all 8 cities from Open-Meteo Archive API and transform datasets using Pandas.</li>
+                    <li>📁 <strong>CSV Data Import</strong>: Upload and validate custom datasets for Users, Vehicles, Rides, Payments, and Ratings with strict schema and foreign-key checks.</li>
+                </ul>
+                <p>Every SQL query is evaluated by an automated <strong>Security Judge</strong> before execution for safe read-only analytics!</p>
+            </div>
+        </div>
+    `;
+    if (window.lucide) lucide.createIcons();
+}
+
+function restoreChatHistory() {
+    const history = getChatHistory();
+    const messagesArea = document.getElementById('messages-area');
+
+    if (!history || history.length === 0) {
+        renderDefaultWelcomeMessage();
+        return;
+    }
+
+    messagesArea.innerHTML = '';
+    history.forEach(item => {
+        if (item.role === 'user') {
+            appendUserMessage(item.text, item.time, false);
+        } else if (item.role === 'assistant' && item.data) {
+            renderAgentResponse(item.data, item.time, false);
+        }
+    });
+}
+
 function initChat() {
     const chatForm = document.getElementById('chat-form');
     const chatInput = document.getElementById('chat-input');
-    const messagesArea = document.getElementById('messages-area');
     const chips = document.querySelectorAll('.chip');
+
+    // Restore saved chat history on load
+    restoreChatHistory();
 
     // Query chips click
     chips.forEach(chip => {
@@ -94,17 +169,65 @@ function initChat() {
         });
     });
 
+    // Chat Actions: New Chat, Clear History, Export Chat
+    const btnNewChat = document.getElementById('btn-new-chat');
+    const btnClearChat = document.getElementById('btn-clear-chat');
+    const btnExportChat = document.getElementById('btn-export-chat');
+
+    if (btnNewChat) {
+        btnNewChat.addEventListener('click', () => {
+            localStorage.removeItem(CHAT_STORAGE_KEY);
+            renderDefaultWelcomeMessage();
+        });
+    }
+
+    if (btnClearChat) {
+        btnClearChat.addEventListener('click', () => {
+            if (confirm("Are you sure you want to clear your saved chat history? This cannot be undone.")) {
+                localStorage.removeItem(CHAT_STORAGE_KEY);
+                renderDefaultWelcomeMessage();
+            }
+        });
+    }
+
+    if (btnExportChat) {
+        btnExportChat.addEventListener('click', () => {
+            const history = getChatHistory();
+            if (history.length === 0) {
+                alert("No chat history to export yet.");
+                return;
+            }
+
+            const exportData = {
+                platform: "OLA AI Data Agent",
+                exported_at: new Date().toISOString(),
+                total_messages: history.length,
+                conversation: history
+            };
+
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
+            const downloadAnchor = document.createElement('a');
+            downloadAnchor.setAttribute("href", dataStr);
+            downloadAnchor.setAttribute("download", `ola_chat_export_${new Date().toISOString().slice(0,10)}.json`);
+            document.body.appendChild(downloadAnchor);
+            downloadAnchor.click();
+            downloadAnchor.remove();
+        });
+    }
+
     // Form submission
     chatForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const message = chatInput.value.trim();
         if (!message) return;
 
-        // Render user message
-        appendUserMessage(message);
+        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        // 1. Render & persist user message
+        appendUserMessage(message, timeStr, true);
         chatInput.value = '';
 
-        // Render loading agent message
+        // 2. Render loading agent message
         const loadingId = 'loading-' + Date.now();
         appendLoadingMessage(loadingId);
 
@@ -118,7 +241,8 @@ function initChat() {
             const data = await response.json();
             removeMessage(loadingId);
 
-            renderAgentResponse(data);
+            // 3. Render & persist agent response
+            renderAgentResponse(data, timeStr, true);
         } catch (err) {
             removeMessage(loadingId);
             appendErrorMessage(`Failed to communicate with agent server: ${err.message}`);
@@ -126,16 +250,18 @@ function initChat() {
     });
 }
 
-function appendUserMessage(text) {
+function appendUserMessage(text, timeStr = null, shouldSave = true) {
     const messagesArea = document.getElementById('messages-area');
     const card = document.createElement('div');
     card.className = 'message-card user-message';
+    const displayTime = timeStr || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
     card.innerHTML = `
         <div class="message-header">
             <div class="avatar user-avatar"><i data-lucide="user"></i></div>
             <div class="message-meta">
                 <span class="sender-name">You</span>
-                <span class="message-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                <span class="message-time">${displayTime}</span>
             </div>
         </div>
         <div class="message-body">
@@ -145,6 +271,17 @@ function appendUserMessage(text) {
     messagesArea.appendChild(card);
     messagesArea.scrollTop = messagesArea.scrollHeight;
     if (window.lucide) lucide.createIcons();
+
+    if (shouldSave) {
+        const history = getChatHistory();
+        history.push({
+            role: 'user',
+            text: text,
+            time: displayTime,
+            timestamp: new Date().toISOString()
+        });
+        saveChatHistory(history);
+    }
 }
 
 function appendLoadingMessage(id) {
@@ -197,12 +334,12 @@ function appendErrorMessage(errorText) {
     if (window.lucide) lucide.createIcons();
 }
 
-function renderAgentResponse(data) {
+function renderAgentResponse(data, timeStr = null, shouldSave = true) {
     const messagesArea = document.getElementById('messages-area');
     const card = document.createElement('div');
     card.className = 'message-card agent-message';
 
-    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const displayTime = timeStr || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const isSql = data.route === 'sql';
     const isSafe = data.is_safe === 'Yes';
     const routeBadgeClass = isSql ? 'sql' : 'etl';
@@ -212,8 +349,8 @@ function renderAgentResponse(data) {
             <div class="avatar agent-avatar"><i data-lucide="bot"></i></div>
             <div class="message-meta">
                 <span class="sender-name">OLA AI Data Agent</span>
-                <span class="p-badge ${routeBadgeClass}">${data.route.toUpperCase()} ANALYST</span>
-                <span class="message-time">${timeStr}</span>
+                <span class="p-badge ${routeBadgeClass}">${(data.route || 'SQL').toUpperCase()} ANALYST</span>
+                <span class="message-time">${displayTime}</span>
             </div>
         </div>
         <div class="message-body">
@@ -247,7 +384,7 @@ function renderAgentResponse(data) {
     html += `<div class="formatted-answer">${formatMarkdownText(data.answer)}</div>`;
 
     // 3. Visualization Container (Chart + Interactive Table)
-    const uniqueVisId = 'vis-' + Date.now();
+    const uniqueVisId = 'vis-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
     const hasData = data.rows && data.rows.length > 0;
     const canChart = data.chart && data.chart.can_chart;
 
@@ -317,6 +454,17 @@ function renderAgentResponse(data) {
     }
 
     if (window.lucide) lucide.createIcons();
+
+    if (shouldSave) {
+        const history = getChatHistory();
+        history.push({
+            role: 'assistant',
+            data: data,
+            time: displayTime,
+            timestamp: new Date().toISOString()
+        });
+        saveChatHistory(history);
+    }
 }
 
 function renderDynamicChart(canvasId, chartConfig) {
@@ -953,6 +1101,352 @@ async function previewFileContent(filePath) {
     } catch (err) {
         tableWrapper.innerHTML = `<p style="color: var(--accent-red);">Error previewing file: ${err.message}</p>`;
     }
+}
+
+/* ==========================================================================
+   5.5 DATA IMPORT STUDIO
+   ========================================================================== */
+
+let stagedDatasetsState = {};
+
+function initDataImport() {
+    const uploadForm = document.getElementById('import-upload-form');
+    const fileInput = document.getElementById('import-file-input');
+    const dropArea = document.getElementById('file-drop-area');
+    const selectedBadge = document.getElementById('selected-file-name');
+    const targetSelect = document.getElementById('import-target-table');
+    const btnValidate = document.getElementById('btn-validate-csv');
+    const validationOutput = document.getElementById('validation-output');
+    const btnLoadDb = document.getElementById('btn-load-database');
+    const btnClearStaged = document.getElementById('btn-clear-staged');
+    const loadOutput = document.getElementById('load-db-output');
+
+    if (!uploadForm) return;
+
+    // Drag and drop handlers
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropArea.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            dropArea.classList.add('dragover');
+        });
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            dropArea.classList.remove('dragover');
+        });
+    });
+
+    dropArea.addEventListener('drop', (e) => {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        if (files.length > 0) {
+            fileInput.files = files;
+            updateSelectedFileUI(files[0]);
+        }
+    });
+
+    dropArea.addEventListener('click', () => {
+        fileInput.click();
+    });
+
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length > 0) {
+            updateSelectedFileUI(fileInput.files[0]);
+        }
+    });
+
+    function updateSelectedFileUI(file) {
+        selectedBadge.style.display = 'inline-flex';
+        selectedBadge.innerHTML = `<i data-lucide="file-check"></i> ${escapeHtml(file.name)} (${(file.size / 1024).toFixed(1)} KB)`;
+        if (window.lucide) lucide.createIcons();
+    }
+
+    // Form Submission: Validate CSV
+    uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!fileInput.files || fileInput.files.length === 0) {
+            alert('Please select a CSV file to validate.');
+            return;
+        }
+
+        const file = fileInput.files[0];
+        const targetTable = targetSelect.value;
+
+        btnValidate.disabled = true;
+        btnValidate.innerHTML = '<div class="loading-spinner"></div> Validating Dataset Schema & PKs...';
+        validationOutput.style.display = 'block';
+        validationOutput.innerHTML = '<p class="loading-text">Validating column mappings, primary key uniqueness, and non-empty fields...</p>';
+
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+            if (targetTable) {
+                formData.append('target_table', targetTable);
+            }
+
+            const res = await fetch('/api/import/validate', {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await res.json();
+            renderValidationResult(data);
+
+            if (data.valid && data.table_name) {
+                stagedDatasetsState[data.table_name] = {
+                    filename: data.filename,
+                    row_count: data.row_count,
+                    columns: data.columns,
+                    sample_records: data.sample_records,
+                    staged_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                };
+                refreshStagedTable();
+                showImportPreview(data.table_name, data.sample_records, data.columns, data.row_count);
+            }
+        } catch (err) {
+            validationOutput.innerHTML = `<div class="import-error-list"><strong>Network/Server Error:</strong> ${escapeHtml(err.message)}</div>`;
+        } finally {
+            btnValidate.disabled = false;
+            btnValidate.innerHTML = '<i data-lucide="check-circle"></i> Validate CSV Dataset';
+            if (window.lucide) lucide.createIcons();
+        }
+    });
+
+    // Load staged datasets into PostgreSQL
+    btnLoadDb.addEventListener('click', async () => {
+        const stagedTables = Object.keys(stagedDatasetsState);
+        if (stagedTables.length === 0) {
+            alert('No validated datasets are staged for loading.');
+            return;
+        }
+
+        btnLoadDb.disabled = true;
+        btnLoadDb.innerHTML = '<div class="loading-spinner"></div> Executing Atomic Transaction...';
+        loadOutput.innerHTML = '<p class="loading-text">Validating foreign keys and executing PostgreSQL batch insert...</p>';
+
+        try {
+            const res = await fetch('/api/import/load', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tables: stagedTables })
+            });
+
+            const result = await res.json();
+
+            if (result.success) {
+                let countSummary = '';
+                if (result.loaded_counts) {
+                    countSummary = Object.entries(result.loaded_counts)
+                        .map(([t, c]) => `• <strong>${t}</strong>: ${c} rows`)
+                        .join('<br>');
+                }
+
+                loadOutput.innerHTML = `
+                    <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid var(--primary-emerald); padding: 14px; border-radius: 8px; color: #D1D5DB;">
+                        <div style="display: flex; align-items: center; gap: 8px; color: var(--primary-emerald); font-weight: 600; margin-bottom: 6px;">
+                            <i data-lucide="check-circle-2"></i> Database Load Successful!
+                        </div>
+                        <p style="font-size: 0.88rem; margin-bottom: 8px;">All datasets committed atomically in dependency order:</p>
+                        <div style="font-size: 0.84rem; line-height: 1.6;">${countSummary}</div>
+                    </div>
+                `;
+
+                // Reset staged state
+                stagedDatasetsState = {};
+                refreshStagedTable();
+
+                // Automatically refresh DB explorer & KPI dashboard
+                loadDbSchema();
+                loadDashboardStats();
+            } else {
+                let errHtml = `<strong style="color: var(--accent-red);">${escapeHtml(result.error || 'Database load failed.')}</strong>`;
+                if (result.errors && result.errors.length > 0) {
+                    errHtml += `<ul style="margin-top: 6px; margin-left: 18px;">${result.errors.map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`;
+                }
+                loadOutput.innerHTML = `
+                    <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid var(--accent-red); padding: 14px; border-radius: 8px; color: #FECACA;">
+                        <div style="display: flex; align-items: center; gap: 8px; color: var(--accent-red); font-weight: 600; margin-bottom: 6px;">
+                            <i data-lucide="alert-octagon"></i> Transaction Rolled Back
+                        </div>
+                        <p style="font-size: 0.86rem;">No partial changes were saved. Please resolve the integrity errors and retry:</p>
+                        <div style="font-size: 0.84rem; margin-top: 6px;">${errHtml}</div>
+                    </div>
+                `;
+            }
+        } catch (err) {
+            loadOutput.innerHTML = `<div class="import-error-list"><strong>Failed to execute database load:</strong> ${escapeHtml(err.message)}</div>`;
+        } finally {
+            btnLoadDb.disabled = Object.keys(stagedDatasetsState).length === 0;
+            btnLoadDb.innerHTML = '<i data-lucide="database"></i> Load into PostgreSQL (Atomic Transaction)';
+            if (window.lucide) lucide.createIcons();
+        }
+    });
+
+    // Clear Staged Datasets
+    btnClearStaged.addEventListener('click', async () => {
+        try {
+            await fetch('/api/import/clear-staged', { method: 'POST' });
+            stagedDatasetsState = {};
+            refreshStagedTable();
+            loadOutput.innerHTML = '';
+            validationOutput.style.display = 'none';
+            document.getElementById('import-preview-section').style.display = 'none';
+        } catch (err) {
+            console.error('Error clearing staged:', err);
+        }
+    });
+}
+
+function renderValidationResult(data) {
+    const validationOutput = document.getElementById('validation-output');
+    validationOutput.style.display = 'block';
+
+    const isValid = data.valid;
+    const errors = data.errors || [];
+    const warnings = data.warnings || [];
+
+    let checkpointsHtml = `
+        <div class="checkpoint-list">
+            <div class="checkpoint-item ${data.filename.endsWith('.csv') ? 'pass' : 'fail'}">
+                <i data-lucide="${data.filename.endsWith('.csv') ? 'check-circle' : 'x-circle'}"></i>
+                <span>File Format: CSV (.csv) Verified</span>
+            </div>
+            <div class="checkpoint-item ${errors.some(e => e.includes('missing required column')) ? 'fail' : 'pass'}">
+                <i data-lucide="${errors.some(e => e.includes('missing required column')) ? 'x-circle' : 'check-circle'}"></i>
+                <span>Required Schema Columns: ${errors.some(e => e.includes('missing required column')) ? 'Missing Columns' : 'All Present'}</span>
+            </div>
+            <div class="checkpoint-item ${errors.some(e => e.includes('duplicate primary key')) ? 'fail' : 'pass'}">
+                <i data-lucide="${errors.some(e => e.includes('duplicate primary key')) ? 'x-circle' : 'check-circle'}"></i>
+                <span>Primary Key Uniqueness: ${errors.some(e => e.includes('duplicate primary key')) ? 'Duplicate PKs Detected' : '0 Duplicates'}</span>
+            </div>
+            <div class="checkpoint-item ${errors.some(e => e.includes('completely empty')) ? 'fail' : 'pass'}">
+                <i data-lucide="${errors.some(e => e.includes('completely empty')) ? 'x-circle' : 'check-circle'}"></i>
+                <span>Field Completeness: ${errors.some(e => e.includes('completely empty')) ? 'Empty Required Fields' : 'Populated'}</span>
+            </div>
+        </div>
+    `;
+
+    let errorsHtml = '';
+    if (errors.length > 0) {
+        errorsHtml = `
+            <div class="import-error-list">
+                <strong>Validation Errors Detected:</strong>
+                <ul>
+                    ${errors.map(err => `<li>${escapeHtml(err)}</li>`).join('')}
+                </ul>
+            </div>
+        `;
+    }
+
+    let warningsHtml = '';
+    if (warnings.length > 0) {
+        warningsHtml = `
+            <div style="margin-top: 10px; padding: 8px 12px; background: rgba(245, 158, 11, 0.12); border-left: 3px solid var(--accent-amber); border-radius: 4px; color: #FCD34D; font-size: 0.82rem;">
+                <strong>Warnings:</strong>
+                <ul style="margin-left: 18px; margin-top: 4px;">
+                    ${warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}
+                </ul>
+            </div>
+        `;
+    }
+
+    validationOutput.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="font-size: 0.92rem; font-weight: 600; color: ${isValid ? 'var(--primary-emerald)' : 'var(--accent-red)'}; display: flex; align-items: center; gap: 6px;">
+                <i data-lucide="${isValid ? 'check-circle-2' : 'alert-octagon'}"></i>
+                <span>${isValid ? 'Validation Passed & Staged' : 'Validation Failed'}</span>
+            </div>
+            <span class="p-badge ${isValid ? 'safe' : 'p-badge-red'}">${escapeHtml(data.label || data.table_name || 'Dataset')}</span>
+        </div>
+        <div style="font-size: 0.84rem; color: var(--text-muted); margin-bottom: 8px;">
+            Target Table: <strong>public.${escapeHtml(data.table_name || 'unknown')}</strong> | Rows: <strong>${data.row_count || 0}</strong> | Columns: <strong>${(data.columns || []).length}</strong>
+        </div>
+        ${checkpointsHtml}
+        ${errorsHtml}
+        ${warningsHtml}
+    `;
+
+    if (window.lucide) lucide.createIcons();
+}
+
+function refreshStagedTable() {
+    const tbody = document.getElementById('staged-datasets-body');
+    const btnLoadDb = document.getElementById('btn-load-database');
+    const tables = Object.keys(stagedDatasetsState);
+
+    if (!tbody) return;
+
+    if (tables.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="4" class="text-muted" style="text-align: center; padding: 20px;">
+                    No datasets staged yet. Upload and validate a CSV file to begin.
+                </td>
+            </tr>
+        `;
+        if (btnLoadDb) btnLoadDb.disabled = true;
+        return;
+    }
+
+    if (btnLoadDb) btnLoadDb.disabled = false;
+
+    tbody.innerHTML = tables.map(tbl => {
+        const item = stagedDatasetsState[tbl];
+        return `
+            <tr>
+                <td><strong>public.${escapeHtml(tbl)}</strong><br><span style="font-size: 0.76rem; color: var(--text-dim);">${escapeHtml(item.filename)}</span></td>
+                <td>${item.row_count.toLocaleString()}</td>
+                <td><span class="p-badge safe">Ready</span></td>
+                <td>
+                    <button class="btn-refresh" style="padding: 4px 8px; font-size: 0.78rem;" onclick="previewStagedTable('${escapeHtml(tbl)}')">
+                        <i data-lucide="eye"></i> Preview
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+
+    if (window.lucide) lucide.createIcons();
+}
+
+function previewStagedTable(tableName) {
+    const item = stagedDatasetsState[tableName];
+    if (!item) return;
+    showImportPreview(tableName, item.sample_records, item.columns, item.row_count);
+}
+
+function showImportPreview(tableName, records, columns, totalRows) {
+    const previewSection = document.getElementById('import-preview-section');
+    const previewTitle = document.getElementById('import-preview-title');
+    const tableWrapper = document.getElementById('import-preview-table-wrapper');
+
+    if (!previewSection || !tableWrapper) return;
+
+    previewSection.style.display = 'block';
+    previewTitle.innerHTML = `<i data-lucide="table"></i> Staged Dataset Preview: public.${escapeHtml(tableName)} (${totalRows} total rows)`;
+
+    if (!records || records.length === 0) {
+        tableWrapper.innerHTML = `<p class="placeholder-text">No sample records available for preview.</p>`;
+        return;
+    }
+
+    const cols = columns || Object.keys(records[0]);
+    let html = `
+        <table class="data-table">
+            <thead>
+                <tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr>
+            </thead>
+            <tbody>
+                ${records.map(r => `
+                    <tr>${cols.map(c => `<td>${escapeHtml(String(r[c] !== null && r[c] !== undefined ? r[c] : ''))}</td>`).join('')}</tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `;
+    tableWrapper.innerHTML = html;
+    if (window.lucide) lucide.createIcons();
 }
 
 /* ==========================================================================
