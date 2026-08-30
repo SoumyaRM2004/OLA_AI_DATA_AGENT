@@ -334,6 +334,84 @@ class TestMobilityDataImporter(unittest.TestCase):
         fk_valid, fk_errors, _ = validate_batch_foreign_keys(sample_dfs)
         self.assertTrue(fk_valid, f"Batch FK validation on canonical samples failed: {fk_errors}")
 
+    # 26. External Users CSV with composite 'name' (Aarav Sharma & Mary Jane Watson) -> PASS
+    def test_26_users_composite_name_splitting_passes(self):
+        csv_text = (
+            "user_id,name,email,phone,city,user_type\n"
+            "201,Aarav Sharma,aarav@example.com,+919999999999,Bengaluru,rider\n"
+            "202,Mary Jane Watson,mj.watson@example.com,+14165550202,Toronto,rider\n"
+        )
+        valid, df, tbl, errors, warns, meta = validate_csv_content(
+            csv_text.encode("utf-8"), "external_users.csv", "users"
+        )
+        self.assertTrue(valid, f"Composite name validation failed: {errors}")
+        self.assertEqual(len(df), 2)
+        # Verify first row
+        row1 = df[df["user_id"] == 201].iloc[0]
+        self.assertEqual(row1["first_name"], "Aarav")
+        self.assertEqual(row1["last_name"], "Sharma")
+        # Verify second row (multi-word name)
+        row2 = df[df["user_id"] == 202].iloc[0]
+        self.assertEqual(row2["first_name"], "Mary")
+        self.assertEqual(row2["last_name"], "Jane Watson")
+        # Verify missing optional fields are safely None
+        self.assertIsNone(row1["province"])
+
+    # 27. External Users CSV with 'Madonna' (single name) -> FAILS on missing required last_name
+    def test_27_users_composite_madonna_fails_required_last_name(self):
+        csv_text = (
+            "user_id,name,email,user_type\n"
+            "203,Madonna,madonna@example.com,rider\n"
+        )
+        valid, df, tbl, errors, warns, meta = validate_csv_content(
+            csv_text.encode("utf-8"), "madonna_user.csv", "users"
+        )
+        self.assertFalse(valid)
+        ln_errs = [e for e in errors if e.get("column") == "last_name"]
+        self.assertGreaterEqual(len(ln_errs), 1)
+        self.assertIn("missing", ln_errs[0]["problem"].lower())
+
+    # 28. Priority Rule: Exact first_name and last_name ALWAYS WIN over 'name'
+    def test_28_priority_exact_match_wins_over_composite_name(self):
+        csv_text = (
+            "user_id,first_name,last_name,name,email,user_type\n"
+            "204,Bruce,Wayne,Ignore Me,bruce@example.com,rider\n"
+        )
+        valid, df, tbl, errors, warns, meta = validate_csv_content(
+            csv_text.encode("utf-8"), "exact_and_composite.csv", "users"
+        )
+        self.assertTrue(valid, f"Validation failed: {errors}")
+        row = df.iloc[0]
+        self.assertEqual(row["first_name"], "Bruce")
+        self.assertEqual(row["last_name"], "Wayne")
+
+    # 29. External CSV with customer_id, firstName, lastName, email_address, mobile, location
+    def test_29_external_csv_aliases_pass(self):
+        csv_text = (
+            "customer_id,firstName,lastName,email_address,mobile,location,user_type\n"
+            "205,Diana,Prince,diana@example.com,+14165550205,Themyscira,rider\n"
+        )
+        valid, df, tbl, errors, warns, meta = validate_csv_content(
+            csv_text.encode("utf-8"), "external_aliases.csv", "users"
+        )
+        self.assertTrue(valid, f"Alias mapping failed: {errors}")
+        row = df.iloc[0]
+        self.assertEqual(row["user_id"], 205)
+        self.assertEqual(row["first_name"], "Diana")
+        self.assertEqual(row["last_name"], "Prince")
+        self.assertEqual(row["email"], "diana@example.com")
+        self.assertEqual(row["phone"], "+14165550205")
+        self.assertEqual(row["city"], "Themyscira")
+
+    # 30. Auto-detection handles external CSV with 'name' and detects Users with High confidence
+    def test_30_auto_detect_users_from_external_name_header(self):
+        from utils.data_importer import detect_dataset_from_headers
+        headers = ["user_id", "name", "email", "phone", "city", "user_type"]
+        detection = detect_dataset_from_headers(headers)
+        self.assertEqual(detection["detected_dataset"], "users")
+        self.assertEqual(detection["confidence"], "High")
+        self.assertIn("name", detection["proposed_mappings"])
+
 
 if __name__ == "__main__":
     unittest.main()

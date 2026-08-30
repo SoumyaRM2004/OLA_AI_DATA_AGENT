@@ -1273,15 +1273,28 @@ function initDataImport() {
                 typeBadge = '<span class="p-badge safe">Exact Match</span>';
             } else if (item.status === 'alias') {
                 typeBadge = '<span class="p-badge safe">Alias</span>';
+            } else if (item.status === 'composite') {
+                typeBadge = '<span class="p-badge p-badge-amber">Composite Mapping</span>';
             } else if (item.status === 'custom') {
                 typeBadge = '<span class="p-badge safe">Custom</span>';
             }
 
-            const confLabel = item.confidence ? `${item.confidence}%` : '--';
+            let confLabel = item.confidence ? `${item.confidence}%` : '--';
+            if (item.status === 'composite') {
+                confLabel = 'Review Required';
+            }
             const reasonLabel = escapeHtml(item.reason || (item.status === 'exact' ? 'Exact normalized header match' : (item.status === 'alias' ? 'Known configured alias' : 'No safe mapping found (Extra column)')));
+
+            // Build select options including composite options
+            const compositeOptions = detectedTbl === 'users' ? `
+                <option value="first_name+last_name" ${item.canonical === 'first_name + last_name' || item.status === 'composite' ? 'selected' : ''}>
+                    first_name + last_name (Composite Split)
+                </option>
+            ` : '';
 
             const optionsHtml = `
                 <option value="__ignore__" ${!isMapped ? 'selected' : ''}>-- Ignore / Extra Column --</option>
+                ${compositeOptions}
                 ${schemaCols.map(c => `
                     <option value="${c}" ${item.canonical === c ? 'selected' : ''}>${c}</option>
                 `).join('')}

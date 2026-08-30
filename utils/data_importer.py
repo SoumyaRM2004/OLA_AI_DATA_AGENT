@@ -813,6 +813,44 @@ CANONICAL_SAMPLES: Dict[str, str] = {
 
 
 # ============================================================
+# COMPOSITE MAPPINGS REGISTRY
+# Controlled composite column transformations (e.g. name -> first_name + last_name)
+# ============================================================
+
+COMPOSITE_MAPPINGS: Dict[str, Dict[str, List[str]]] = {
+    "users": {
+        "name": ["first_name", "last_name"],
+        "full_name": ["first_name", "last_name"],
+        "fullname": ["first_name", "last_name"],
+        "user_name": ["first_name", "last_name"],
+        "customer_name": ["first_name", "last_name"],
+        "client_name": ["first_name", "last_name"]
+    }
+}
+
+
+def split_full_name(name_val: Any) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Deterministically splits a full name string:
+    - First whitespace-delimited token -> first_name
+    - Remaining tokens joined with single space -> last_name
+    - If single token (e.g. 'Madonna') -> ('Madonna', None)
+    - If empty/None -> (None, None)
+    """
+    if name_val is None or pd.isna(name_val):
+        return None, None
+    s = str(name_val).strip()
+    if not s:
+        return None, None
+    tokens = s.split()
+    if len(tokens) == 0:
+        return None, None
+    if len(tokens) == 1:
+        return tokens[0], None
+    return tokens[0], " ".join(tokens[1:])
+
+
+# ============================================================
 # 5. DATASET AUTO-DETECTION & COLUMN MAPPING ENGINE
 # Header-based scoring engine and synonym matcher.
 # ============================================================
@@ -822,6 +860,7 @@ def detect_dataset_from_headers(
 ) -> Dict[str, Any]:
     """
     Inspects CSV headers and computes deterministic match scores against all 5 supported schemas.
+    Evaluates exact matches, aliases, and controlled composite mappings.
     Does NOT use the filename to determine dataset.
     """
     clean_headers = [normalize_header_name(h) for h in headers if h is not None and str(h).strip()]
@@ -843,10 +882,12 @@ def detect_dataset_from_headers(
         req_cols = set(schema["required_columns"])
         pk = schema["primary_key"]
         aliases = COLUMN_ALIASES.get(tbl_name, {})
+        composites = COMPOSITE_MAPPINGS.get(tbl_name, {})
 
         matched_canonical = set()
         table_mappings = {}
 
+        # 1. Check exact matches and aliases
         for orig_h, h in zip(headers, clean_headers):
             canonical = None
             if h in canonical_cols:
@@ -858,10 +899,19 @@ def detect_dataset_from_headers(
                 matched_canonical.add(canonical)
                 table_mappings[orig_h] = canonical
 
+        # 2. Check composite mappings if canonical fields are unmapped
+        for orig_h, h in zip(headers, clean_headers):
+            if orig_h not in table_mappings and h in composites:
+                comp_targets = composites[h]
+                if any(t not in matched_canonical for t in comp_targets):
+                    for t in comp_targets:
+                        matched_canonical.add(t)
+                    table_mappings[orig_h] = " + ".join(comp_targets)
+
         missing_req = req_cols - matched_canonical
         
-        # Exact Match on all uploaded columns matching canonical columns
-        if len(clean_headers) > 0 and len(matched_canonical) == len(clean_headers) and not missing_req:
+        # Perfect exact match on all uploaded columns matching canonical columns
+        if len(clean_headers) > 0 and len(matched_canonical) == len(clean_headers) and not missing_req and not any(" + " in m for m in table_mappings.values()):
             score = 100.0
         else:
             req_coverage = len(req_cols.intersection(matched_canonical)) / max(len(req_cols), 1)
@@ -903,8 +953,12 @@ def map_columns_to_schema(
     custom_mappings: Optional[Dict[str, str]] = None
 ) -> Dict[str, Any]:
     """
-    Maps uploaded columns to canonical schema columns using custom mappings, exact matches, and aliases.
-    Returns structured mapping details including uploaded header, canonical target, status, confidence, and reason.
+    Maps uploaded columns to canonical schema columns using:
+    1. Exact canonical column match (Highest priority)
+    2. Known deterministic aliases
+    3. Controlled composite mappings (e.g. name -> first_name + last_name)
+    4. Manual user custom mapping override
+    5. Reject if required columns remain unresolved
     """
     clean_dataset = (dataset_type or "").lower().strip()
     if clean_dataset not in TABLE_SCHEMAS:
@@ -912,22 +966,27 @@ def map_columns_to_schema(
             "valid": False,
             "error": f"Invalid dataset type '{dataset_type}'.",
             "mapped_columns": {},
+            "composite_columns": {},
             "mapping_details": [],
             "extra_columns": [],
             "missing_required": [],
-            "ambiguous_columns": []
+            "ambiguous_columns": [],
+            "review_required": False
         }
 
     schema = TABLE_SCHEMAS[clean_dataset]
     canonical_cols = set(schema["columns"].keys())
     req_cols = set(schema["required_columns"])
     aliases = COLUMN_ALIASES.get(clean_dataset, {})
+    composites = COMPOSITE_MAPPINGS.get(clean_dataset, {})
     custom = {normalize_header_name(k): normalize_header_name(v) for k, v in (custom_mappings or {}).items()}
 
-    mapped_columns: Dict[str, str] = {}  # uploaded -> canonical
+    mapped_columns: Dict[str, str] = {}         # uploaded -> canonical column
+    composite_columns: Dict[str, List[str]] = {}  # uploaded -> list of canonical columns (e.g. name -> ['first_name', 'last_name'])
     mapping_details: List[Dict[str, Any]] = []
     used_canonical: Set[str] = set()
 
+    # Pass 1: Handle custom mappings, exact matches, and known aliases
     for col in uploaded_columns:
         norm = normalize_header_name(col)
         target = None
@@ -942,6 +1001,23 @@ def map_columns_to_schema(
                 status = "custom"
                 confidence = 100
                 reason = "User custom mapping override"
+            elif "+" in custom_target:
+                # Custom composite mapping
+                comp_targets = [normalize_header_name(t) for t in custom_target.split("+")]
+                if all(t in canonical_cols for t in comp_targets):
+                    composite_columns[col] = comp_targets
+                    for t in comp_targets:
+                        used_canonical.add(t)
+                    mapped_columns[col] = " + ".join(comp_targets)
+                    mapping_details.append({
+                        "uploaded": col,
+                        "canonical": " + ".join(comp_targets),
+                        "status": "composite",
+                        "confidence": 95,
+                        "reason": f"Custom composite mapping: split into {', '.join(comp_targets)}"
+                    })
+                    continue
+
         elif norm in canonical_cols:
             target = norm
             status = "exact"
@@ -966,6 +1042,7 @@ def map_columns_to_schema(
                 "reason": reason
             })
         else:
+            # Keep placeholder for Pass 2 composite check
             mapping_details.append({
                 "uploaded": col,
                 "canonical": None,
@@ -974,16 +1051,40 @@ def map_columns_to_schema(
                 "reason": "No safe mapping found (Extra column)"
             })
 
+    # Pass 2: Check controlled composite mappings for unmapped columns
+    for idx, item in enumerate(mapping_details):
+        if item["status"] == "extra":
+            col = item["uploaded"]
+            norm = normalize_header_name(col)
+            if norm in composites:
+                comp_targets = composites[norm]
+                # Only activate if any of the target canonical columns are still unmapped
+                if any(t not in used_canonical for t in comp_targets):
+                    composite_columns[col] = comp_targets
+                    for t in comp_targets:
+                        used_canonical.add(t)
+                    mapped_columns[col] = " + ".join(comp_targets)
+                    mapping_details[idx] = {
+                        "uploaded": col,
+                        "canonical": " + ".join(comp_targets),
+                        "status": "composite",
+                        "confidence": 90,
+                        "reason": f"Composite mapping: split into {', '.join(comp_targets)} (Review required)"
+                    }
+
     extra_columns = [col for col in uploaded_columns if col not in mapped_columns]
     missing_required = sorted(list(req_cols - used_canonical))
+    review_required = len(composite_columns) > 0 or any(m["status"] == "alias" for m in mapping_details)
 
     return {
         "valid": len(missing_required) == 0,
         "dataset_type": clean_dataset,
         "mapped_columns": mapped_columns,
+        "composite_columns": composite_columns,
         "mapping_details": mapping_details,
         "extra_columns": extra_columns,
         "missing_required": missing_required,
+        "review_required": review_required,
         "ambiguous_columns": []
     }
 
@@ -1248,50 +1349,80 @@ def validate_csv_content(
         metadata["validation_state"] = "INVALID"
         return False, None, table_name, structured_errors, warnings, metadata
 
-    # 6. Build Normalized Canonical DataFrame
-    normalized_records = []
-    canonical_cols_to_load = list(set(col_map.values()))
+    # 6. Build Normalized Canonical Records via Schema Adaptation Layer
+    composite_cols = mapping_res.get("composite_columns", {})
+    raw_records = raw_df.to_dict(orient="records")
+    canonical_raw_records: List[Dict[str, Any]] = []
 
-    # Invert mapping to find uploaded col for each canonical col
-    canonical_to_uploaded: Dict[str, str] = {v: k for k, v in col_map.items()}
+    # Map uploaded column to canonical column for 1-to-1 mappings
+    one_to_one_map: Dict[str, str] = {
+        upl: can for upl, can in col_map.items() if upl not in composite_cols
+    }
 
-    # Check for Duplicate Primary Keys in Uploaded CSV
-    pk_uploaded = canonical_to_uploaded.get(pk)
-    if pk_uploaded:
-        raw_pk_series = raw_df[pk_uploaded].dropna()
-        # Find non-null duplicate values
-        dup_values = raw_df[pk_uploaded][raw_df[pk_uploaded].duplicated(keep=False)]
-        if not dup_values.empty:
-            unique_dups = dup_values.unique().tolist()
-            sample_dup = unique_dups[0]
-            dup_rows = [i + 2 for i, v in enumerate(raw_df[pk_uploaded]) if str(v) == str(sample_dup)]
-            err = StructuredValidationError(
-                dataset=dataset_label,
-                file=filename,
-                target_table=target_table,
-                row=dup_rows[0] if dup_rows else None,
-                column=pk,
-                value=str(sample_dup),
-                problem=f"Duplicate primary key value '{sample_dup}' found {len(dup_rows)} times in uploaded file.",
-                error_type="duplicate_primary_key",
-                expected=f"Unique '{pk}' value for every row.",
-                suggested_action=f"Ensure primary key column '{pk}' has unique values for all rows in {filename}."
-            )
-            structured_errors.append(err.to_dict())
+    for raw_row in raw_records:
+        canon_row: Dict[str, Any] = {}
+
+        # 1. Apply 1-to-1 mappings
+        for upl_col, can_col in one_to_one_map.items():
+            if can_col in columns_spec:
+                canon_row[can_col] = raw_row.get(upl_col)
+
+        # 2. Apply composite mappings (e.g. name -> first_name, last_name)
+        for upl_col, target_cols in composite_cols.items():
+            raw_val = raw_row.get(upl_col)
+            if table_name == "users" and target_cols == ["first_name", "last_name"]:
+                fn, ln = split_full_name(raw_val)
+                # Exact / 1-to-1 matches take precedence over composite parts
+                if "first_name" not in canon_row or is_null_or_empty(canon_row.get("first_name")):
+                    canon_row["first_name"] = fn
+                if "last_name" not in canon_row or is_null_or_empty(canon_row.get("last_name")):
+                    canon_row["last_name"] = ln
+
+        # 3. For any canonical columns not present in uploaded CSV:
+        for can_col, col_spec in columns_spec.items():
+            if can_col not in canon_row:
+                canon_row[can_col] = None
+
+        canonical_raw_records.append(canon_row)
+
+    # Check for Duplicate Primary Keys in Canonical Records
+    pk_values = [r.get(pk) for r in canonical_raw_records if not is_null_or_empty(r.get(pk))]
+    seen_pks = set()
+    dup_pks = set()
+    for v in pk_values:
+        str_v = str(v).strip()
+        if str_v in seen_pks:
+            dup_pks.add(str_v)
+        seen_pks.add(str_v)
+
+    if dup_pks:
+        sample_dup = list(dup_pks)[0]
+        dup_rows = [i + 2 for i, r in enumerate(canonical_raw_records) if str(r.get(pk)).strip() == sample_dup]
+        err = StructuredValidationError(
+            dataset=dataset_label,
+            file=filename,
+            target_table=target_table,
+            row=dup_rows[0] if dup_rows else None,
+            column=pk,
+            value=str(sample_dup),
+            problem=f"Duplicate primary key value '{sample_dup}' found {len(dup_rows)} times in uploaded file.",
+            error_type="duplicate_primary_key",
+            expected=f"Unique '{pk}' value for every row.",
+            suggested_action=f"Ensure primary key column '{pk}' has unique values for all rows in {filename}."
+        )
+        structured_errors.append(err.to_dict())
 
     # 7. Row-by-Row Value Normalization & Type Checking
     max_row_errors = 25  # Limit error accumulation for giant CSVs
     error_count = len(structured_errors)
-    records_list = raw_df.to_dict(orient="records")
+    normalized_records = []
 
-    for row_idx, row in enumerate(records_list):
+    for row_idx, canon_row in enumerate(canonical_raw_records):
         csv_row_num = row_idx + 2  # 1-indexed data row in CSV (row 1 is header)
         cleaned_row_dict: Dict[str, Any] = {}
 
-        for can_col in canonical_cols_to_load:
-            upl_col = canonical_to_uploaded[can_col]
-            raw_val = row[upl_col]
-            col_spec = columns_spec.get(can_col, {})
+        for can_col, col_spec in columns_spec.items():
+            raw_val = canon_row.get(can_col)
             col_type = col_spec.get("type", "str")
             is_nullable = col_spec.get("nullable", True)
             is_req = col_spec.get("required", False)
@@ -1357,15 +1488,16 @@ def validate_csv_content(
                         row=csv_row_num,
                         column=can_col,
                         value=str(raw_val),
-                        problem=type_err or f"Invalid {col_type} value",
+                        problem=f"Invalid {col_type} value in column '{can_col}': '{raw_val}'. {type_err or ''}".strip(),
                         error_type=err_type_name,
                         expected=exp_str,
                         suggested_action=sugg_str
                     )
                     structured_errors.append(err.to_dict())
                     error_count += 1
-
-            cleaned_row_dict[can_col] = norm_val
+                cleaned_row_dict[can_col] = None
+            else:
+                cleaned_row_dict[can_col] = norm_val
 
         normalized_records.append(cleaned_row_dict)
 
