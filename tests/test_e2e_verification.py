@@ -28,7 +28,7 @@ class TestImporterE2EVerification(unittest.TestCase):
         data = res.json()
         self.assertTrue(data["valid"])
         self.assertEqual(data["table_name"], "users")
-        self.assertEqual(data["row_count"], 3)
+        self.assertEqual(data["row_count"], 10)
         self.assertEqual(len(data["structured_errors"]), 0)
 
         # Load staged to database
@@ -39,16 +39,16 @@ class TestImporterE2EVerification(unittest.TestCase):
         self.assertEqual(load_res.status_code, 200)
         load_data = load_res.json()
         self.assertTrue(load_data["success"])
-        self.assertEqual(load_data["loaded_counts"]["users"], 3)
+        self.assertEqual(load_data["loaded_counts"]["users"], 10)
 
         # Verify in DB
         conn = self.db.get_connection()
         with conn.cursor() as cur:
-            cur.execute("SELECT first_name, last_name, email FROM public.users WHERE user_id = 90001;")
+            cur.execute("SELECT first_name, last_name, email FROM public.users WHERE user_id = 101;")
             row = cur.fetchone()
             self.assertIsNotNone(row)
-            self.assertEqual(row[0], "John")
-            self.assertEqual(row[1], "Doe")
+            self.assertEqual(row[0], "Aarav")
+            self.assertEqual(row[1], "Sharma")
 
     # TEST 2: Upload CSV with wrong filename but correct Users columns -> auto-detect Users
     def test_e2e_02_auto_detect_users_from_headers(self):
@@ -118,7 +118,7 @@ class TestImporterE2EVerification(unittest.TestCase):
 
     # TEST 6: Upload existing PK in Append mode -> conflict detected
     def test_e2e_06_existing_pk_conflict_in_append_mode(self):
-        # User 90001 already in DB from test 1
+        # User 101 already in DB from test 1
         with self.get_fixture_file("valid_users.csv") as f:
             res = self.client.post(
                 "/api/import/validate",
@@ -131,7 +131,7 @@ class TestImporterE2EVerification(unittest.TestCase):
         pk_errs = [e for e in data["structured_errors"] if e["error_type"] == "existing_primary_key"]
         self.assertGreaterEqual(len(pk_errs), 1)
         self.assertEqual(pk_errs[0]["column"], "user_id")
-        self.assertEqual(pk_errs[0]["value"], "90001")
+        self.assertEqual(pk_errs[0]["value"], "101")
 
     # TEST 7: Upload rides.csv containing NaN pickup_time -> caught BEFORE PostgreSQL -> converted to SQL NULL
     def test_e2e_07_nan_pickup_time_handled_safely(self):

@@ -66,25 +66,22 @@ TABLE_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "ride_id": {"type": "int", "required": True, "nullable": False, "unique": True},
             "rider_id": {"type": "int", "required": True, "nullable": False},
             "driver_id": {"type": "int", "required": True, "nullable": False},
-            "vehicle_id": {"type": "int", "required": False, "nullable": True},
+            "requested_at": {"type": "timestamp", "required": False, "nullable": True},
+            "pickup_time": {"type": "timestamp", "required": False, "nullable": True},
+            "dropoff_time": {"type": "timestamp", "required": False, "nullable": True},
             "pickup_latitude": {"type": "decimal", "required": False, "nullable": True, "precision": (9, 6)},
             "pickup_longitude": {"type": "decimal", "required": False, "nullable": True, "precision": (9, 6)},
             "dropoff_latitude": {"type": "decimal", "required": False, "nullable": True, "precision": (9, 6)},
             "dropoff_longitude": {"type": "decimal", "required": False, "nullable": True, "precision": (9, 6)},
-            "requested_at": {"type": "timestamp", "required": False, "nullable": True},
-            "pickup_time": {"type": "timestamp", "required": False, "nullable": True},
-            "dropoff_time": {"type": "timestamp", "required": False, "nullable": True},
-            "fare": {"type": "decimal", "required": False, "nullable": True, "precision": (10, 2)},
             "distance_km": {"type": "decimal", "required": False, "nullable": True, "precision": (6, 2)},
-            "duration_minutes": {"type": "decimal", "required": False, "nullable": True, "precision": (6, 2)},
+            "fare": {"type": "decimal", "required": False, "nullable": True, "precision": (10, 2)},
             "surge_multiplier": {"type": "decimal", "required": False, "nullable": True, "precision": (3, 2)},
             "status": {"type": "str", "required": False, "nullable": True, "max_len": 30},
             "cancellation_reason": {"type": "str", "required": False, "nullable": True, "max_len": 100}
         },
         "foreign_keys": {
             "rider_id": ("users", "user_id"),
-            "driver_id": ("users", "user_id"),
-            "vehicle_id": ("vehicles", "vehicle_id")
+            "driver_id": ("users", "user_id")
         }
     },
     "payments": {

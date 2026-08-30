@@ -342,6 +342,31 @@ async def get_import_schema_info():
     })
 
 
+@app.get("/api/import/samples/{dataset_type}")
+async def get_sample_csv(dataset_type: str):
+    """
+    Returns the canonical, pre-validated sample CSV file for the requested dataset.
+    """
+    tbl = dataset_type.lower().strip()
+    valid_tables = ["users", "vehicles", "rides", "payments", "ratings"]
+    if tbl not in valid_tables:
+        raise HTTPException(status_code=404, detail=f"Sample dataset '{tbl}' not found. Supported: {valid_tables}")
+
+    sample_filename = f"{tbl}_sample.csv"
+    sample_path = os.path.join(os.path.dirname(__file__), "data", "sample", sample_filename)
+    if not os.path.exists(sample_path):
+        sample_path = os.path.join(os.path.dirname(__file__), "tests", "fixtures", f"valid_{tbl}.csv")
+
+    if not os.path.exists(sample_path):
+        raise HTTPException(status_code=404, detail=f"Sample file for '{tbl}' not found.")
+
+    return FileResponse(
+        path=sample_path,
+        media_type="text/csv",
+        filename=sample_filename
+    )
+
+
 @app.post("/api/import/inspect")
 async def inspect_import_file(
     file: UploadFile = File(...),

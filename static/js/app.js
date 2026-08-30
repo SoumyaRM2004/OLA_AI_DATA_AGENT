@@ -1261,7 +1261,7 @@ function initDataImport() {
         const schemaCols = {
             'users': ['user_id', 'first_name', 'last_name', 'email', 'phone', 'city', 'province', 'user_type', 'signup_date', 'is_active'],
             'vehicles': ['vehicle_id', 'driver_id', 'make', 'model', 'year', 'license_plate', 'color', 'is_active'],
-            'rides': ['ride_id', 'rider_id', 'driver_id', 'vehicle_id', 'pickup_latitude', 'pickup_longitude', 'dropoff_latitude', 'dropoff_longitude', 'requested_at', 'pickup_time', 'dropoff_time', 'fare', 'distance_km', 'duration_minutes', 'surge_multiplier', 'status', 'cancellation_reason'],
+            'rides': ['ride_id', 'rider_id', 'driver_id', 'requested_at', 'pickup_time', 'dropoff_time', 'pickup_latitude', 'pickup_longitude', 'dropoff_latitude', 'dropoff_longitude', 'distance_km', 'fare', 'surge_multiplier', 'status', 'cancellation_reason'],
             'payments': ['payment_id', 'ride_id', 'user_id', 'amount', 'payment_method', 'payment_status', 'transaction_id', 'payment_time'],
             'ratings': ['rating_id', 'ride_id', 'rider_id', 'driver_id', 'rating', 'comment', 'rated_at']
         }[detectedTbl] || [];
