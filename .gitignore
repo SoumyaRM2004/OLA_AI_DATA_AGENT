@@ -27,6 +27,8 @@ Thumbs.db
 
 # Test artifacts
 test_schema_details.txt
+data/uploads/
+data/transform/
 
 # UV lock (optional - uncomment if you want to track it)
 # uv.lock

@@ -1311,7 +1311,6 @@ function initDataImport() {
                         <div style="font-size: 0.84rem; line-height: 1.6;">${countSummary}</div>
                     </div>
                 `;
-
                 // Reset staged state
                 stagedDatasetsState = {};
                 refreshStagedTable();
@@ -1320,17 +1319,28 @@ function initDataImport() {
                 loadDbSchema();
                 loadDashboardStats();
             } else {
-                let errHtml = `<strong style="color: var(--accent-red);">${escapeHtml(result.error || 'Database load failed.')}</strong>`;
-                if (result.errors && result.errors.length > 0) {
-                    errHtml += `<ul style="margin-top: 6px; margin-left: 18px;">${result.errors.map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`;
+                let errHtml = '';
+                if (result.error) {
+                    errHtml += `<div style="white-space: pre-wrap; font-family: inherit; font-size: 0.86rem; line-height: 1.5; margin-bottom: 8px;">${escapeHtml(result.error)}</div>`;
+                }
+                if (result.errors && result.errors.length > 0 && result.errors[0] !== result.error) {
+                    errHtml += `<ul style="margin-top: 6px; margin-left: 18px;">${result.errors.map(e => `<li style="white-space: pre-wrap; margin-bottom: 6px;">${escapeHtml(e)}</li>`).join('')}</ul>`;
+                }
+                if (result.technical_error && result.technical_error !== result.error) {
+                    errHtml += `
+                        <details style="margin-top: 10px; font-size: 0.78rem; opacity: 0.85;">
+                            <summary style="cursor: pointer; color: var(--text-muted);">Technical Details (PostgreSQL Log)</summary>
+                            <pre style="margin-top: 4px; padding: 6px 10px; background: rgba(0,0,0,0.3); border-radius: 4px; overflow-x: auto; white-space: pre-wrap; color: #FECACA;">${escapeHtml(result.technical_error)}</pre>
+                        </details>
+                    `;
                 }
                 loadOutput.innerHTML = `
                     <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid var(--accent-red); padding: 14px; border-radius: 8px; color: #FECACA;">
                         <div style="display: flex; align-items: center; gap: 8px; color: var(--accent-red); font-weight: 600; margin-bottom: 6px;">
                             <i data-lucide="alert-octagon"></i> Transaction Rolled Back
                         </div>
-                        <p style="font-size: 0.86rem;">No partial changes were saved. Please resolve the integrity errors and retry:</p>
-                        <div style="font-size: 0.84rem; margin-top: 6px;">${errHtml}</div>
+                        <p style="font-size: 0.86rem; margin-bottom: 8px;">No partial changes were saved. Please resolve the integrity errors and retry:</p>
+                        <div style="font-size: 0.84rem;">${errHtml}</div>
                     </div>
                 `;
             }
@@ -1394,10 +1404,10 @@ function renderValidationResult(data) {
     let errorsHtml = '';
     if (errors.length > 0) {
         errorsHtml = `
-            <div class="import-error-list">
+            <div class="import-error-list" style="white-space: pre-wrap;">
                 <strong>Validation Errors Detected:</strong>
-                <ul>
-                    ${errors.map(err => `<li>${escapeHtml(err)}</li>`).join('')}
+                <ul style="margin-top: 6px; margin-left: 18px;">
+                    ${errors.map(err => `<li style="margin-bottom: 8px; white-space: pre-wrap;">${escapeHtml(err)}</li>`).join('')}
                 </ul>
             </div>
         `;
