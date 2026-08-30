@@ -412,6 +412,67 @@ class TestMobilityDataImporter(unittest.TestCase):
         self.assertEqual(detection["confidence"], "High")
         self.assertIn("name", detection["proposed_mappings"])
 
+    # 31. TEST C: External Users CSV (user_id, name, email, city, signup_date) missing user_type
+    def test_31_external_users_missing_user_type_resolved_with_default(self):
+        csv_text = (
+            "user_id,name,email,city,signup_date\n"
+            "301,Aarav Sharma,aarav301@example.com,Bengaluru,2025-01-10\n"
+            "302,Priya Patel,priya302@example.com,Mumbai,2025-01-11\n"
+        )
+        # Step 1: Without explicit default -> FAILS cleanly on missing_required_column, NOT CSV parse failure
+        valid, df, tbl, errors, warns, meta = validate_csv_content(
+            csv_text.encode("utf-8"), "external_users_no_type.csv", "users"
+        )
+        self.assertFalse(valid)
+        self.assertEqual(meta["validation_state"], "INVALID")
+        self.assertEqual(meta["row_count"], 2)
+        self.assertIn("user_type", meta["missing_required"])
+        self.assertTrue(any(e.get("error_type") == "missing_required_column" for e in errors))
+
+        # Step 2: With user-selected explicit default value {"user_type": "rider"} -> PASSES and applies to all rows
+        valid2, df2, tbl2, errors2, warns2, meta2 = validate_csv_content(
+            csv_text.encode("utf-8"), "external_users_no_type.csv", "users",
+            default_values={"user_type": "rider"}
+        )
+        self.assertTrue(valid2, f"Validation with default failed: {errors2}")
+        self.assertEqual(len(df2), 2)
+        self.assertEqual(df2.iloc[0]["first_name"], "Aarav")
+        self.assertEqual(df2.iloc[0]["last_name"], "Sharma")
+        self.assertEqual(df2.iloc[0]["user_type"], "rider")
+        self.assertEqual(df2.iloc[1]["first_name"], "Priya")
+        self.assertEqual(df2.iloc[1]["last_name"], "Patel")
+        self.assertEqual(df2.iloc[1]["user_type"], "rider")
+
+    # 32. TEST D: Madonna single-name fail verified row-by-row
+    def test_32_madonna_single_name_exact_row_failure(self):
+        csv_text = (
+            "user_id,name,email,user_type\n"
+            "401,Aarav Sharma,aarav401@example.com,rider\n"
+            "402,Madonna,madonna@example.com,rider\n"
+        )
+        valid, df, tbl, errors, warns, meta = validate_csv_content(
+            csv_text.encode("utf-8"), "madonna_test.csv", "users"
+        )
+        self.assertFalse(valid)
+        ln_errs = [e for e in errors if e.get("column") == "last_name" and e.get("row") == 3]
+        self.assertEqual(len(ln_errs), 1, f"Expected error on row 3 for Madonna, got: {errors}")
+        self.assertEqual(ln_errs[0]["error_type"], "null_required_value")
+
+    # 33. TEST E: Duplicate PK failure inside uploaded CSV
+    def test_33_duplicate_pk_inside_csv_fails(self):
+        csv_text = (
+            "user_id,first_name,last_name,email,user_type\n"
+            "501,Clark,Kent,clark@dailyplanet.com,rider\n"
+            "501,Superman,Kent,superman@dailyplanet.com,rider\n"
+        )
+        valid, df, tbl, errors, warns, meta = validate_csv_content(
+            csv_text.encode("utf-8"), "duplicate_pk.csv", "users"
+        )
+        self.assertFalse(valid)
+        pk_errs = [e for e in errors if e.get("error_type") == "duplicate_primary_key"]
+        self.assertEqual(len(pk_errs), 1)
+        self.assertEqual(pk_errs[0]["value"], "501")
+
 
 if __name__ == "__main__":
     unittest.main()

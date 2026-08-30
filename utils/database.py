@@ -306,21 +306,21 @@ class DatabaseConnection:
             # Total users
             res = self.execute_query_structured("SELECT COUNT(*) AS total FROM public.users;")
             if res["records"]:
-                stats["total_users"] = res["records"][0].get("total", 0)
+                stats["total_users"] = int(res["records"][0].get("total", 0))
 
             # Total rides & completed rides
-            res = self.execute_query_structured("SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed FROM public.rides;")
+            res = self.execute_query_structured("SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN status ILIKE 'completed' THEN 1 ELSE 0 END), 0) AS completed FROM public.rides;")
             if res["records"]:
-                stats["total_rides"] = res["records"][0].get("total", 0)
-                stats["completed_rides"] = res["records"][0].get("completed", 0)
+                stats["total_rides"] = int(res["records"][0].get("total", 0))
+                stats["completed_rides"] = int(res["records"][0].get("completed", 0))
 
             # Total vehicles
             res = self.execute_query_structured("SELECT COUNT(*) AS total FROM public.vehicles;")
             if res["records"]:
-                stats["total_vehicles"] = res["records"][0].get("total", 0)
+                stats["total_vehicles"] = int(res["records"][0].get("total", 0))
 
-            # Total revenue
-            res = self.execute_query_structured("SELECT COALESCE(SUM(amount), 0) AS revenue FROM public.payments WHERE payment_status = 'successful' OR payment_status = 'completed';")
+            # Total revenue (completed & successful transactions)
+            res = self.execute_query_structured("SELECT COALESCE(SUM(amount), 0) AS revenue FROM public.payments WHERE payment_status ILIKE '%success%' OR payment_status ILIKE '%complet%';")
             if res["records"]:
                 stats["total_revenue"] = float(res["records"][0].get("revenue", 0))
 
@@ -330,7 +330,7 @@ class DatabaseConnection:
                 stats["avg_rating"] = round(float(res["records"][0].get("avg_rating", 0)), 2)
 
             # Payment breakdown
-            res = self.execute_query_structured("SELECT payment_method, COUNT(*) AS count, SUM(amount) AS total FROM public.payments GROUP BY payment_method ORDER BY count DESC;")
+            res = self.execute_query_structured("SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total FROM public.payments GROUP BY payment_method ORDER BY count DESC;")
             stats["payment_breakdown"] = res["records"]
 
             # Rides by status
@@ -345,7 +345,6 @@ class DatabaseConnection:
                 FROM public.ratings r
                 JOIN public.users u ON r.driver_id = u.user_id
                 GROUP BY u.user_id, u.first_name, u.last_name
-                HAVING COUNT(r.rating_id) >= 3
                 ORDER BY avg_rating DESC, total_reviews DESC
                 LIMIT 5;
             """)
@@ -357,7 +356,7 @@ class DatabaseConnection:
                     COUNT(*) AS total_records,
                     COUNT(DISTINCT city) AS cities_count,
                     ROUND(AVG(temperature_c)::numeric, 1) AS avg_temperature,
-                    SUM(CASE WHEN is_rainy THEN 1 ELSE 0 END) AS rainy_hours_count
+                    COALESCE(SUM(CASE WHEN is_rainy THEN 1 ELSE 0 END), 0) AS rainy_hours_count
                 FROM public.weather_data;
             """)
             if w_res["records"]:

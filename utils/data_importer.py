@@ -1201,10 +1201,12 @@ def validate_csv_content(
     filename: str,
     dataset_type: Optional[str] = None,
     custom_mappings: Optional[Dict[str, str]] = None,
+    default_values: Optional[Dict[str, Any]] = None,
     import_mode: str = "upsert"
 ) -> Tuple[bool, Optional[pd.DataFrame], Optional[str], List[Dict[str, Any]], List[str], Dict[str, Any]]:
     """
     Strictly validates and normalizes an uploaded CSV file against the target schema.
+    Supports controlled schema-adaptation (aliases, composite name splitting, and user default values).
     
     Returns:
         (is_valid, normalized_dataframe, table_name, structured_errors, warnings, metadata)
@@ -1334,19 +1336,32 @@ def validate_csv_content(
             f"These columns are not part of the {dataset_label} schema and will not be loaded into PostgreSQL."
         )
 
-    # 5. Check Missing Required Columns
-    if missing_req:
+    # 5. Check Missing Required Columns and evaluate Default Values
+    clean_defaults = {normalize_header_name(k): v for k, v in (default_values or {}).items() if v is not None and str(v).strip()}
+    unresolved_missing = []
+
+    for req_c in missing_req:
+        if req_c in clean_defaults:
+            val = clean_defaults[req_c]
+            warnings.append(
+                f"Applied user-configured default value '{val}' to required column '{req_c}' for all {len(raw_df)} records."
+            )
+        else:
+            unresolved_missing.append(req_c)
+
+    if unresolved_missing:
         err = StructuredValidationError(
             dataset=dataset_label,
             file=filename,
             target_table=target_table,
-            problem=f"Missing required column(s): {', '.join(missing_req)}",
+            problem=f"Missing required column(s): {', '.join(unresolved_missing)}",
             error_type="missing_required_column",
             expected=f"All required columns present: {', '.join(req_cols)}",
-            suggested_action=f"Add the required column(s) ({', '.join(missing_req)}) or provide a valid column mapping."
+            suggested_action=f"Add the required column(s) ({', '.join(unresolved_missing)}) or provide a valid column mapping/default value."
         )
         structured_errors.append(err.to_dict())
         metadata["validation_state"] = "INVALID"
+        metadata["missing_required"] = unresolved_missing
         return False, None, table_name, structured_errors, warnings, metadata
 
     # 6. Build Normalized Canonical Records via Schema Adaptation Layer
@@ -1380,8 +1395,11 @@ def validate_csv_content(
 
         # 3. For any canonical columns not present in uploaded CSV:
         for can_col, col_spec in columns_spec.items():
-            if can_col not in canon_row:
-                canon_row[can_col] = None
+            if can_col not in canon_row or is_null_or_empty(canon_row.get(can_col)):
+                if can_col in clean_defaults:
+                    canon_row[can_col] = clean_defaults[can_col]
+                else:
+                    canon_row[can_col] = None
 
         canonical_raw_records.append(canon_row)
 

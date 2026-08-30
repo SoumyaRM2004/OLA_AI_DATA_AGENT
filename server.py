@@ -33,11 +33,13 @@ app = FastAPI(
 allowed_origins_env = os.getenv("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
 allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
 
+from utils.chat_store import ChatStore
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -46,6 +48,13 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     message: str
+    chat_id: Optional[str] = None
+
+class CreateChatRequest(BaseModel):
+    title: Optional[str] = "New Chat"
+
+class UpdateChatRequest(BaseModel):
+    title: str
 
 class ExtractRequest(BaseModel):
     url: Optional[str] = "https://archive-api.open-meteo.com/v1/archive?start_date=2025-01-01&end_date=2025-01-31"
@@ -68,16 +77,91 @@ class LoadDbRequest(BaseModel):
 
 # ------------------- API ENDPOINTS -------------------
 
+@app.get("/api/chats")
+async def list_chats_endpoint():
+    """Returns list of all persistent chat sessions."""
+    chats = ChatStore.list_chats()
+    return JSONResponse(content={"chats": chats})
+
+
+@app.post("/api/chats")
+async def create_chat_endpoint(request: Optional[CreateChatRequest] = None):
+    """Creates a new unique chat session."""
+    title = request.title if request and request.title else "New Chat"
+    chat = ChatStore.create_chat(title=title)
+    return JSONResponse(content=chat)
+
+
+@app.get("/api/chats/{chat_id}")
+async def get_chat_endpoint(chat_id: str):
+    """Fetches full chat session with message history."""
+    chat = ChatStore.get_chat(chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail=f"Chat session '{chat_id}' not found.")
+    return JSONResponse(content=chat)
+
+
+@app.put("/api/chats/{chat_id}")
+async def update_chat_endpoint(chat_id: str, request: UpdateChatRequest):
+    """Renames a specific chat session."""
+    if not request.title or not request.title.strip():
+        raise HTTPException(status_code=400, detail="Title cannot be empty.")
+    chat = ChatStore.update_chat_title(chat_id, request.title.strip())
+    if not chat:
+        raise HTTPException(status_code=404, detail=f"Chat session '{chat_id}' not found.")
+    return JSONResponse(content=chat)
+
+
+@app.delete("/api/chats/{chat_id}")
+async def delete_chat_endpoint(chat_id: str):
+    """Deletes a chat session."""
+    ChatStore.delete_chat(chat_id)
+    return JSONResponse(content={"success": True, "message": f"Chat session '{chat_id}' deleted."})
+
+
+@app.post("/api/chats/{chat_id}/clear")
+async def clear_chat_endpoint(chat_id: str):
+    """Clears messages for a specific chat session."""
+    success = ChatStore.clear_messages(chat_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Chat session '{chat_id}' not found.")
+    return JSONResponse(content={"success": True, "message": "Chat history cleared."})
+
+
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
     """
     Main interaction point for the AI Data Agent.
     Routes between SQL Analyst and ETL Analyst.
+    Always executes live query against current PostgreSQL database.
     """
     if not request.message or not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
     
+    chat_id = request.chat_id
+    if not chat_id or not ChatStore.get_chat(chat_id):
+        new_chat = ChatStore.create_chat(title="New Chat")
+        chat_id = new_chat["id"]
+
+    # 1. Record user message in persistent chat session
+    ChatStore.add_message(chat_id, role="user", content=request.message.strip())
+
+    # 2. Execute live agent query against PostgreSQL
     result = execute_agent_query(request.message.strip())
+
+    # 3. Record assistant response in persistent chat session
+    ChatStore.add_message(
+        chat_id,
+        role="assistant",
+        content=result.get("answer", ""),
+        extra_data=result
+    )
+
+    # 4. Attach chat context metadata
+    updated_chat = ChatStore.get_chat(chat_id)
+    result["chat_id"] = chat_id
+    result["chat_title"] = updated_chat.get("title", "New Chat") if updated_chat else "New Chat"
+
     return JSONResponse(content=result)
 
 
@@ -417,6 +501,7 @@ async def validate_import_file(
     file: UploadFile = File(...),
     dataset_type: str = Form(...),
     custom_mappings: Optional[str] = Form(None),
+    default_values: Optional[str] = Form(None),
     import_mode: Optional[str] = Form("upsert")
 ):
     """
@@ -433,17 +518,25 @@ async def validate_import_file(
         except Exception:
             parsed_custom_mappings = None
 
+    parsed_default_values = None
+    if default_values and default_values.strip():
+        try:
+            parsed_default_values = json.loads(default_values)
+        except Exception:
+            parsed_default_values = None
+
     is_valid, df, table_name, structured_errors, warnings, metadata = validate_csv_content(
         file_bytes=file_bytes,
         filename=file.filename,
         dataset_type=dataset_type,
         custom_mappings=parsed_custom_mappings,
+        default_values=parsed_default_values,
         import_mode=import_mode or "upsert"
     )
 
     sample_records = []
-    columns = []
-    row_count = 0
+    columns = metadata.get("columns", [])
+    row_count = metadata.get("row_count", 0)
 
     # Format text error strings for display compatibility
     text_errors = [

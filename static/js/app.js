@@ -85,31 +85,15 @@ function initNavigation() {
 }
 
 /* ==========================================================================
-   2. AI CHAT STUDIO & PERSISTENCE
+   2. AI CHAT STUDIO — PERSISTENT MULTI-CHAT SYSTEM (CHATGPT-STYLE)
    ========================================================================== */
 
-function getChatHistory() {
-    try {
-        const raw = localStorage.getItem(CHAT_STORAGE_KEY);
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
-    } catch (e) {
-        console.warn("Error reading chat history from localStorage:", e);
-        return [];
-    }
-}
-
-function saveChatHistory(history) {
-    try {
-        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(history));
-    } catch (e) {
-        console.warn("Error saving chat history to localStorage:", e);
-    }
-}
+let activeChatId = null;
+let chatSessionsCache = [];
 
 function renderDefaultWelcomeMessage() {
     const messagesArea = document.getElementById('messages-area');
+    if (!messagesArea) return;
     messagesArea.innerHTML = `
         <div class="message-card agent-message">
             <div class="message-header">
@@ -120,138 +104,408 @@ function renderDefaultWelcomeMessage() {
                 </div>
             </div>
             <div class="message-body">
-                <p>Welcome to the <strong>OLA Mobility Intelligence Platform</strong>! I am your AI Data Agent combining synthetic ride-hailing datasets with external <strong>Open-Meteo weather data across all 8 Canadian ride-hailing cities</strong>.</p>
+                <p>Welcome to the <strong>OLA Mobility Intelligence Platform</strong>! I am your AI Data Agent querying PostgreSQL live and combining synthetic ride-hailing datasets with external <strong>Open-Meteo weather data across all 8 Canadian ride-hailing cities</strong>.</p>
                 <ul>
                     <li>📊 <strong>SQL Analytics</strong>: Query rides, fares, driver ratings, and correlate ride metrics with weather conditions (rain vs. cancellations, surge pricing) across Calgary, Edmonton, Halifax, Montreal, Ottawa, Toronto, Vancouver, and Winnipeg.</li>
                     <li>🌦️ <strong>Weather & Mobility ETL</strong>: Extract historical hourly weather data for all 8 cities from Open-Meteo Archive API and transform datasets using Pandas.</li>
                     <li>📁 <strong>CSV Data Import</strong>: Upload and validate custom datasets for Users, Vehicles, Rides, Payments, and Ratings with strict schema and foreign-key checks.</li>
                 </ul>
-                <p>Every SQL query is evaluated by an automated <strong>Security Judge</strong> before execution for safe read-only analytics!</p>
+                <p>Every SQL query is evaluated by an automated <strong>Security Judge</strong> before execution against current PostgreSQL data!</p>
             </div>
         </div>
     `;
     if (window.lucide) lucide.createIcons();
 }
 
-function restoreChatHistory() {
-    const history = getChatHistory();
-    const messagesArea = document.getElementById('messages-area');
-
-    if (!history || history.length === 0) {
-        renderDefaultWelcomeMessage();
-        return;
-    }
-
-    messagesArea.innerHTML = '';
-    history.forEach(item => {
-        if (item.role === 'user') {
-            appendUserMessage(item.text, item.time, false);
-        } else if (item.role === 'assistant' && item.data) {
-            renderAgentResponse(item.data, item.time, false);
-        }
-    });
-}
-
-function initChat() {
+async function initChat() {
     const chatForm = document.getElementById('chat-form');
     const chatInput = document.getElementById('chat-input');
     const chips = document.querySelectorAll('.chip');
 
-    // Restore saved chat history on load
-    restoreChatHistory();
+    // Toolbar & action buttons
+    const btnNewChat = document.getElementById('btn-new-chat');
+    const btnClearChat = document.getElementById('btn-clear-chat');
+    const btnExportChat = document.getElementById('btn-export-chat');
+    const btnRenameActive = document.getElementById('btn-rename-active-chat');
+    const btnSaveRename = document.getElementById('btn-save-rename');
+    const btnCancelRename = document.getElementById('btn-cancel-rename');
+    const renameInput = document.getElementById('chat-rename-input');
+
+    if (btnNewChat) {
+        btnNewChat.addEventListener('click', () => createNewChat());
+    }
+
+    if (btnClearChat) {
+        btnClearChat.addEventListener('click', () => clearActiveChat());
+    }
+
+    if (btnExportChat) {
+        btnExportChat.addEventListener('click', () => exportActiveChat());
+    }
+
+    if (btnRenameActive) {
+        btnRenameActive.addEventListener('click', () => {
+            const currentTitle = document.getElementById('current-chat-title').textContent.trim();
+            showRenameForm(currentTitle);
+        });
+    }
+
+    if (btnSaveRename) {
+        btnSaveRename.addEventListener('click', () => saveActiveChatRename());
+    }
+
+    if (btnCancelRename) {
+        btnCancelRename.addEventListener('click', () => hideRenameForm());
+    }
+
+    if (renameInput) {
+        renameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                saveActiveChatRename();
+            } else if (e.key === 'Escape') {
+                hideRenameForm();
+            }
+        });
+    }
 
     // Query chips click
     chips.forEach(chip => {
         chip.addEventListener('click', () => {
             const prompt = chip.getAttribute('data-prompt');
-            chatInput.value = prompt;
-            chatForm.dispatchEvent(new Event('submit'));
+            if (chatInput) {
+                chatInput.value = prompt;
+                chatForm.dispatchEvent(new Event('submit'));
+            }
         });
     });
 
-    // Chat Actions: New Chat, Clear History, Export Chat
-    const btnNewChat = document.getElementById('btn-new-chat');
-    const btnClearChat = document.getElementById('btn-clear-chat');
-    const btnExportChat = document.getElementById('btn-export-chat');
-
-    if (btnNewChat) {
-        btnNewChat.addEventListener('click', () => {
-            localStorage.removeItem(CHAT_STORAGE_KEY);
-            renderDefaultWelcomeMessage();
-        });
-    }
-
-    if (btnClearChat) {
-        btnClearChat.addEventListener('click', () => {
-            if (confirm("Are you sure you want to clear your saved chat history? This cannot be undone.")) {
-                localStorage.removeItem(CHAT_STORAGE_KEY);
-                renderDefaultWelcomeMessage();
-            }
-        });
-    }
-
-    if (btnExportChat) {
-        btnExportChat.addEventListener('click', () => {
-            const history = getChatHistory();
-            if (history.length === 0) {
-                alert("No chat history to export yet.");
-                return;
-            }
-
-            const exportData = {
-                platform: "OLA AI Data Agent",
-                exported_at: new Date().toISOString(),
-                total_messages: history.length,
-                conversation: history
-            };
-
-            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
-            const downloadAnchor = document.createElement('a');
-            downloadAnchor.setAttribute("href", dataStr);
-            downloadAnchor.setAttribute("download", `ola_chat_export_${new Date().toISOString().slice(0,10)}.json`);
-            document.body.appendChild(downloadAnchor);
-            downloadAnchor.click();
-            downloadAnchor.remove();
-        });
-    }
-
     // Form submission
-    chatForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const message = chatInput.value.trim();
-        if (!message) return;
+    if (chatForm) {
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const message = chatInput.value.trim();
+            if (!message) return;
 
-        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-        // 1. Render & persist user message
-        appendUserMessage(message, timeStr, true);
-        chatInput.value = '';
+            // 1. Render & display user message locally
+            appendUserMessage(message, timeStr);
+            chatInput.value = '';
 
-        // 2. Render loading agent message
-        const loadingId = 'loading-' + Date.now();
-        appendLoadingMessage(loadingId);
+            // 2. Render loading agent message
+            const loadingId = 'loading-' + Date.now();
+            appendLoadingMessage(loadingId);
 
-        try {
-            const response = await fetch('/api/chat', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message })
-            });
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message, chat_id: activeChatId })
+                });
 
-            const data = await response.json();
-            removeMessage(loadingId);
+                const data = await response.json();
+                removeMessage(loadingId);
 
-            // 3. Render & persist agent response
-            renderAgentResponse(data, timeStr, true);
-        } catch (err) {
-            removeMessage(loadingId);
-            appendErrorMessage(`Failed to communicate with agent server: ${err.message}`);
+                if (data.chat_id) {
+                    activeChatId = data.chat_id;
+                    localStorage.setItem('ola_active_chat_id', data.chat_id);
+                }
+
+                if (data.chat_title) {
+                    document.getElementById('current-chat-title').textContent = data.chat_title;
+                }
+
+                // 3. Render agent response
+                renderAgentResponse(data, timeStr);
+
+                // 4. Refresh chat sidebar list to show updated title / time
+                loadChatSessions(activeChatId, false);
+
+            } catch (err) {
+                removeMessage(loadingId);
+                appendErrorMessage(`Failed to communicate with agent server: ${err.message}`);
+            }
+        });
+    }
+
+    // Initial load of chat sessions
+    await loadChatSessions();
+}
+
+async function loadChatSessions(targetId = null, switchSession = true) {
+    try {
+        const res = await fetch('/api/chats');
+        const data = await res.json();
+        chatSessionsCache = data.chats || [];
+
+        renderChatSessionsList();
+
+        if (chatSessionsCache.length === 0) {
+            await createNewChat();
+            return;
+        }
+
+        if (switchSession) {
+            const savedId = targetId || localStorage.getItem('ola_active_chat_id');
+            const validSession = chatSessionsCache.find(c => c.id === savedId);
+            const activeId = validSession ? validSession.id : chatSessionsCache[0].id;
+            await switchChat(activeId);
+        } else {
+            highlightActiveSessionInList();
+        }
+    } catch (err) {
+        console.error('Error loading chat sessions:', err);
+    }
+}
+
+function renderChatSessionsList() {
+    const listEl = document.getElementById('chat-sessions-list');
+    if (!listEl) return;
+
+    listEl.innerHTML = '';
+    chatSessionsCache.forEach(chat => {
+        const isActive = chat.id === activeChatId;
+        const item = document.createElement('div');
+        item.className = `chat-session-item ${isActive ? 'active' : ''}`;
+        item.setAttribute('data-chat-id', chat.id);
+
+        let timeDisplay = '';
+        if (chat.updated_at) {
+            try {
+                const d = new Date(chat.updated_at);
+                timeDisplay = d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            } catch (_) {}
+        }
+
+        item.innerHTML = `
+            <div class="chat-session-info" onclick="switchChat('${escapeHtml(chat.id)}')">
+                <span class="chat-session-title" title="${escapeHtml(chat.title || 'Untitled')}">${escapeHtml(chat.title || 'New Chat')}</span>
+                <span class="chat-session-time">${escapeHtml(timeDisplay)}</span>
+            </div>
+            <div class="chat-session-actions">
+                <button class="btn-session-action" title="Rename" onclick="event.stopPropagation(); promptRenameChat('${escapeHtml(chat.id)}', '${escapeHtml(chat.title || '')}')">
+                    <i data-lucide="edit-2"></i>
+                </button>
+                <button class="btn-session-action delete" title="Delete" onclick="event.stopPropagation(); deleteChatSession('${escapeHtml(chat.id)}')">
+                    <i data-lucide="trash-2"></i>
+                </button>
+            </div>
+        `;
+
+        listEl.appendChild(item);
+    });
+
+    if (window.lucide) lucide.createIcons();
+}
+
+function highlightActiveSessionInList() {
+    document.querySelectorAll('.chat-session-item').forEach(el => {
+        const cId = el.getAttribute('data-chat-id');
+        if (cId === activeChatId) {
+            el.classList.add('active');
+        } else {
+            el.classList.remove('active');
         }
     });
 }
 
-function appendUserMessage(text, timeStr = null, shouldSave = true) {
+async function switchChat(chatId) {
+    if (!chatId) return;
+    activeChatId = chatId;
+    localStorage.setItem('ola_active_chat_id', chatId);
+    highlightActiveSessionInList();
+
     const messagesArea = document.getElementById('messages-area');
+    const titleEl = document.getElementById('current-chat-title');
+    hideRenameForm();
+
+    messagesArea.innerHTML = '<p class="loading-text">Loading conversation...</p>';
+
+    try {
+        const res = await fetch(`/api/chats/${chatId}`);
+        if (!res.ok) {
+            renderDefaultWelcomeMessage();
+            return;
+        }
+
+        const chatData = await res.json();
+        titleEl.textContent = chatData.title || 'New Chat';
+
+        const messages = chatData.messages || [];
+        if (messages.length === 0) {
+            renderDefaultWelcomeMessage();
+            return;
+        }
+
+        messagesArea.innerHTML = '';
+        messages.forEach(msg => {
+            const timeStr = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+            if (msg.role === 'user') {
+                appendUserMessage(msg.content, timeStr);
+            } else if (msg.role === 'assistant') {
+                const responseData = msg.extra && Object.keys(msg.extra).length > 0 ? msg.extra : {
+                    route: 'sql',
+                    answer: msg.content,
+                    is_safe: 'Yes',
+                    sql_query: msg.extra ? msg.extra.sql_query : '',
+                    columns: msg.extra ? msg.extra.columns : [],
+                    rows: msg.extra ? msg.extra.rows : [],
+                    chart: msg.extra ? msg.extra.chart : { can_chart: false }
+                };
+                renderAgentResponse(responseData, timeStr);
+            }
+        });
+
+    } catch (err) {
+        messagesArea.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">Error loading chat: ${escapeHtml(err.message)}</p>`;
+    }
+}
+
+async function createNewChat() {
+    try {
+        const res = await fetch('/api/chats', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: 'New Chat' })
+        });
+        const newChat = await res.json();
+        activeChatId = newChat.id;
+        localStorage.setItem('ola_active_chat_id', newChat.id);
+
+        await loadChatSessions(newChat.id, true);
+        const chatInput = document.getElementById('chat-input');
+        if (chatInput) chatInput.focus();
+    } catch (err) {
+        console.error('Failed to create new chat:', err);
+    }
+}
+
+function showRenameForm(currentTitle) {
+    const displayBox = document.getElementById('chat-title-display');
+    const formBox = document.getElementById('chat-rename-form');
+    const input = document.getElementById('chat-rename-input');
+
+    if (displayBox) displayBox.classList.add('hidden');
+    if (formBox) formBox.classList.remove('hidden');
+    if (input) {
+        input.value = currentTitle;
+        input.focus();
+        input.select();
+    }
+}
+
+function hideRenameForm() {
+    const displayBox = document.getElementById('chat-title-display');
+    const formBox = document.getElementById('chat-rename-form');
+
+    if (displayBox) displayBox.classList.remove('hidden');
+    if (formBox) formBox.classList.add('hidden');
+}
+
+async function saveActiveChatRename() {
+    const input = document.getElementById('chat-rename-input');
+    if (!input || !activeChatId) return;
+
+    const newTitle = input.value.trim();
+    if (!newTitle) {
+        hideRenameForm();
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/chats/${activeChatId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: newTitle })
+        });
+        const updated = await res.json();
+        document.getElementById('current-chat-title').textContent = updated.title || newTitle;
+        hideRenameForm();
+        loadChatSessions(activeChatId, false);
+    } catch (err) {
+        alert(`Failed to rename chat: ${err.message}`);
+    }
+}
+
+async function promptRenameChat(chatId, oldTitle) {
+    const newTitle = prompt("Enter new title for conversation:", oldTitle || "New Chat");
+    if (newTitle && newTitle.trim() && newTitle.trim() !== oldTitle) {
+        try {
+            const res = await fetch(`/api/chats/${chatId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: newTitle.trim() })
+            });
+            const updated = await res.json();
+            if (activeChatId === chatId) {
+                document.getElementById('current-chat-title').textContent = updated.title || newTitle.trim();
+            }
+            loadChatSessions(activeChatId, false);
+        } catch (err) {
+            alert(`Failed to rename chat: ${err.message}`);
+        }
+    }
+}
+
+async function deleteChatSession(chatId) {
+    if (!confirm("Are you sure you want to delete this chat conversation?")) return;
+
+    try {
+        await fetch(`/api/chats/${chatId}`, { method: 'DELETE' });
+        if (activeChatId === chatId) {
+            activeChatId = null;
+            localStorage.removeItem('ola_active_chat_id');
+        }
+        await loadChatSessions();
+    } catch (err) {
+        alert(`Failed to delete chat: ${err.message}`);
+    }
+}
+
+async function clearActiveChat() {
+    if (!activeChatId) return;
+    if (!confirm("Are you sure you want to clear all messages in this conversation?")) return;
+
+    try {
+        await fetch(`/api/chats/${activeChatId}/clear`, { method: 'POST' });
+        renderDefaultWelcomeMessage();
+        loadChatSessions(activeChatId, false);
+    } catch (err) {
+        alert(`Failed to clear chat: ${err.message}`);
+    }
+}
+
+async function exportActiveChat() {
+    if (!activeChatId) return;
+    try {
+        const res = await fetch(`/api/chats/${activeChatId}`);
+        const chatData = await res.json();
+
+        const exportData = {
+            platform: "OLA AI Data Agent",
+            chat_id: chatData.id,
+            title: chatData.title,
+            exported_at: new Date().toISOString(),
+            total_messages: (chatData.messages || []).length,
+            conversation: chatData.messages || []
+        };
+
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
+        const downloadAnchor = document.createElement('a');
+        downloadAnchor.setAttribute("href", dataStr);
+        downloadAnchor.setAttribute("download", `ola_chat_${chatData.title.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${new Date().toISOString().slice(0,10)}.json`);
+        document.body.appendChild(downloadAnchor);
+        downloadAnchor.click();
+        downloadAnchor.remove();
+    } catch (err) {
+        alert(`Failed to export chat: ${err.message}`);
+    }
+}
+
+function appendUserMessage(text, timeStr = null) {
+    const messagesArea = document.getElementById('messages-area');
+    if (!messagesArea) return;
     const card = document.createElement('div');
     card.className = 'message-card user-message';
     const displayTime = timeStr || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -271,21 +525,11 @@ function appendUserMessage(text, timeStr = null, shouldSave = true) {
     messagesArea.appendChild(card);
     messagesArea.scrollTop = messagesArea.scrollHeight;
     if (window.lucide) lucide.createIcons();
-
-    if (shouldSave) {
-        const history = getChatHistory();
-        history.push({
-            role: 'user',
-            text: text,
-            time: displayTime,
-            timestamp: new Date().toISOString()
-        });
-        saveChatHistory(history);
-    }
 }
 
 function appendLoadingMessage(id) {
     const messagesArea = document.getElementById('messages-area');
+    if (!messagesArea) return;
     const card = document.createElement('div');
     card.id = id;
     card.className = 'message-card agent-message';
@@ -300,7 +544,7 @@ function appendLoadingMessage(id) {
         <div class="message-body">
             <div style="display: flex; align-items: center; gap: 10px; color: var(--accent-cyan);">
                 <div class="loading-spinner"></div>
-                <span>Orchestrating agents, generating SQL & validating security policies...</span>
+                <span>Querying live PostgreSQL, orchestrating agents & verifying security policies...</span>
             </div>
         </div>
     `;
@@ -316,6 +560,7 @@ function removeMessage(id) {
 
 function appendErrorMessage(errorText) {
     const messagesArea = document.getElementById('messages-area');
+    if (!messagesArea) return;
     const card = document.createElement('div');
     card.className = 'message-card agent-message';
     card.innerHTML = `
@@ -334,8 +579,9 @@ function appendErrorMessage(errorText) {
     if (window.lucide) lucide.createIcons();
 }
 
-function renderAgentResponse(data, timeStr = null, shouldSave = true) {
+function renderAgentResponse(data, timeStr = null) {
     const messagesArea = document.getElementById('messages-area');
+    if (!messagesArea) return;
     const card = document.createElement('div');
     card.className = 'message-card agent-message';
 
@@ -454,17 +700,6 @@ function renderAgentResponse(data, timeStr = null, shouldSave = true) {
     }
 
     if (window.lucide) lucide.createIcons();
-
-    if (shouldSave) {
-        const history = getChatHistory();
-        history.push({
-            role: 'assistant',
-            data: data,
-            time: displayTime,
-            timestamp: new Date().toISOString()
-        });
-        saveChatHistory(history);
-    }
 }
 
 function renderDynamicChart(canvasId, chartConfig) {
@@ -573,27 +808,44 @@ function downloadCsv(visId) {
 }
 
 /* ==========================================================================
-   3. OVERVIEW / KPI DASHBOARD
+   3. OVERVIEW / KPI DASHBOARD (LIVE POSTGRESQL AGGREGATIONS)
    ========================================================================== */
 async function initDashboard() {
     const refreshBtn = document.getElementById('refresh-stats-btn');
+    const refreshBtnTop = document.getElementById('refresh-stats-btn-top');
+
     if (refreshBtn) {
-        refreshBtn.addEventListener('click', loadDashboardStats);
+        refreshBtn.addEventListener('click', () => loadDashboardStats());
     }
+    if (refreshBtnTop) {
+        refreshBtnTop.addEventListener('click', () => loadDashboardStats());
+    }
+
     loadDashboardStats();
 }
 
 async function loadDashboardStats() {
+    const refreshBtnTop = document.getElementById('refresh-stats-btn-top');
+    if (refreshBtnTop) {
+        refreshBtnTop.innerHTML = '<div class="loading-spinner"></div> <span>Fetching Live Data...</span>';
+    }
+
     try {
         const res = await fetch('/api/stats');
         const stats = await res.json();
 
         // Update KPI cards
-        document.getElementById('kpi-total-rides').textContent = Number(stats.total_rides || 0).toLocaleString();
-        document.getElementById('kpi-completed-rides').textContent = `${Number(stats.completed_rides || 0).toLocaleString()} completed`;
-        document.getElementById('kpi-revenue').textContent = '₹' + Number(stats.total_revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        document.getElementById('kpi-users').textContent = Number(stats.total_users || 0).toLocaleString();
-        document.getElementById('kpi-rating').textContent = `${stats.avg_rating || 0} ★`;
+        const ridesEl = document.getElementById('kpi-total-rides');
+        const completedEl = document.getElementById('kpi-completed-rides');
+        const revEl = document.getElementById('kpi-revenue');
+        const usersEl = document.getElementById('kpi-users');
+        const ratingEl = document.getElementById('kpi-rating');
+
+        if (ridesEl) ridesEl.textContent = Number(stats.total_rides || 0).toLocaleString();
+        if (completedEl) completedEl.textContent = `${Number(stats.completed_rides || 0).toLocaleString()} completed`;
+        if (revEl) revEl.textContent = '₹' + Number(stats.total_revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        if (usersEl) usersEl.textContent = Number(stats.total_users || 0).toLocaleString();
+        if (ratingEl) ratingEl.textContent = `${stats.avg_rating || 0} ★`;
 
         // Update Weather KPI card
         if (stats.weather_stats) {
@@ -619,6 +871,11 @@ async function loadDashboardStats() {
 
     } catch (err) {
         console.error('Error loading dashboard stats:', err);
+    } finally {
+        if (refreshBtnTop) {
+            refreshBtnTop.innerHTML = '<i data-lucide="rotate-cw"></i> <span>Refresh Dashboard</span>';
+            if (window.lucide) lucide.createIcons();
+        }
     }
 }
 
@@ -735,7 +992,7 @@ function renderTopDriversTable(drivers) {
     if (!wrapper) return;
 
     if (!drivers || drivers.length === 0) {
-        wrapper.innerHTML = '<p class="placeholder-text">No driver data available yet.</p>';
+        wrapper.innerHTML = '<p class="placeholder-text">No driver ratings recorded yet.</p>';
         return;
     }
 
@@ -766,9 +1023,10 @@ function renderTopDriversTable(drivers) {
 }
 
 /* ==========================================================================
-   4. DATABASE EXPLORER
+   4. DATABASE EXPLORER (LIVE POSTGRESQL QUERIES & REFRESH)
    ========================================================================== */
 let dbSchemaCache = {};
+let currentActiveDbTable = 'users';
 
 async function initDbExplorer() {
     const searchInput = document.getElementById('db-search-input');
@@ -778,16 +1036,26 @@ async function initDbExplorer() {
             filterActiveTableRows(query);
         });
     }
+
+    const refreshDbBtn = document.getElementById('btn-refresh-db-explorer');
+    if (refreshDbBtn) {
+        refreshDbBtn.addEventListener('click', async () => {
+            refreshDbBtn.innerHTML = '<div class="loading-spinner"></div> <span>Querying...</span>';
+            await loadDbSchema(currentActiveDbTable);
+            refreshDbBtn.innerHTML = '<i data-lucide="rotate-cw"></i> <span>Refresh Data</span>';
+            if (window.lucide) lucide.createIcons();
+        });
+    }
 }
 
-async function loadDbSchema() {
+async function loadDbSchema(preferredTable = null) {
     const listContainer = document.getElementById('db-table-list');
-    listContainer.innerHTML = '<p class="loading-text">Fetching schema...</p>';
+    listContainer.innerHTML = '<p class="loading-text">Fetching live schema from PostgreSQL...</p>';
 
     try {
         const res = await fetch('/api/schema');
         if (!res.ok) {
-            let errorText = `Database schema request failed (HTTP ${res.status}). Check server logs.`;
+            let errorText = `Database schema request failed (HTTP ${res.status}). Check PostgreSQL connection.`;
             try {
                 const errData = await res.json();
                 if (errData && errData.error) errorText = errData.error;
@@ -806,15 +1074,18 @@ async function loadDbSchema() {
 
         const tableNames = Object.keys(dbSchemaCache);
         if (tableNames.length === 0) {
-            listContainer.innerHTML = '<p class="placeholder-text">No tables found. Run feed_db.py to populate.</p>';
+            listContainer.innerHTML = '<p class="placeholder-text">No tables found in PostgreSQL schema.</p>';
             return;
         }
 
+        const selectedTable = preferredTable && tableNames.includes(preferredTable) ? preferredTable : (tableNames.includes(currentActiveDbTable) ? currentActiveDbTable : tableNames[0]);
+        currentActiveDbTable = selectedTable;
+
         listContainer.innerHTML = '';
-        tableNames.forEach((tName, idx) => {
+        tableNames.forEach((tName) => {
             const tInfo = dbSchemaCache[tName];
             const btn = document.createElement('button');
-            btn.className = `table-btn ${idx === 0 ? 'active' : ''}`;
+            btn.className = `table-btn ${tName === selectedTable ? 'active' : ''}`;
             btn.innerHTML = `
                 <span>${tName}</span>
                 <span class="table-badge">${Number(tInfo.row_count || 0).toLocaleString()} rows</span>
@@ -822,15 +1093,14 @@ async function loadDbSchema() {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.table-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
+                currentActiveDbTable = tName;
                 displayTableData(tName);
             });
             listContainer.appendChild(btn);
         });
 
-        // Load first table by default
-        if (tableNames.length > 0) {
-            displayTableData(tableNames[0]);
-        }
+        // Load active table data
+        displayTableData(selectedTable);
 
     } catch (err) {
         listContainer.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">Database schema request failed: ${escapeHtml(err.message || 'Check server logs.')}</p>`;
@@ -845,7 +1115,7 @@ async function displayTableData(tableName) {
 
     title.textContent = `public.${tableName}`;
     const tInfo = dbSchemaCache[tableName] || {};
-    meta.textContent = `${tInfo.row_count || 0} total records`;
+    meta.textContent = `${Number(tInfo.row_count || 0).toLocaleString()} total records in PostgreSQL`;
 
     // Render columns schema table
     const columns = tInfo.columns || [];
@@ -873,11 +1143,11 @@ async function displayTableData(tableName) {
     schemaInner.innerHTML = schemaHtml;
 
     // Fetch live 50 rows
-    dataWrapper.innerHTML = '<p class="loading-text">Loading rows...</p>';
+    dataWrapper.innerHTML = '<p class="loading-text">Loading rows from PostgreSQL...</p>';
     try {
         const res = await fetch(`/api/tables/${tableName}?limit=50`);
         if (!res.ok) {
-            let errorText = `Failed to fetch live rows for ${tableName} (HTTP ${res.status}). Check server logs.`;
+            let errorText = `Failed to fetch live rows for ${tableName} (HTTP ${res.status}).`;
             try {
                 const errData = await res.json();
                 if (errData && errData.error) errorText = errData.error;
@@ -912,7 +1182,7 @@ async function displayTableData(tableName) {
             `;
             dataWrapper.innerHTML = dataHtml;
         } else {
-            dataWrapper.innerHTML = '<p class="placeholder-text">Table is empty.</p>';
+            dataWrapper.innerHTML = '<p class="placeholder-text">Table is empty in PostgreSQL.</p>';
         }
     } catch (err) {
         dataWrapper.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">Failed to fetch live rows for ${tableName}: ${escapeHtml(err.message || 'Check server logs.')}</p>`;
@@ -1202,6 +1472,8 @@ function initDataImport() {
     const loadOutput = document.getElementById('load-db-output');
     const mappingCard = document.getElementById('column-mapping-card');
     const mappingTbody = document.getElementById('column-mapping-tbody');
+    const missingFieldsCard = document.getElementById('missing-fields-card');
+    const missingFieldsList = document.getElementById('missing-fields-list');
     const confidenceBadge = document.getElementById('detection-confidence-badge');
     const btnDownloadNorm = document.getElementById('btn-download-canonical-csv');
 
@@ -1238,10 +1510,139 @@ function initDataImport() {
                 }
                 setWorkflowStep('map');
                 renderColumnMappingCard(data);
+                renderMissingFieldsCard(data);
             }
         } catch (err) {
             console.warn('Inspect error:', err);
         }
+    }
+
+    function renderMissingFieldsCard(data) {
+        if (!missingFieldsCard || !missingFieldsList) return;
+        
+        const missing = data.missing_required || (data.metadata && data.metadata.missing_required) || [];
+        const detectedTbl = data.detected_dataset || (data.metadata && data.metadata.dataset_type) || (targetSelect ? targetSelect.value : 'users');
+
+        if (!missing || missing.length === 0) {
+            missingFieldsCard.style.display = 'none';
+            missingFieldsList.innerHTML = '';
+            return;
+        }
+
+        missingFieldsCard.style.display = 'block';
+
+        const columnPresets = {
+            'users': {
+                'user_type': {
+                    label: 'User Type (Rider or Driver)',
+                    type: 'VARCHAR(20) [Required]',
+                    presets: [
+                        { value: 'rider', label: 'Set Default: "rider" (Passenger)' },
+                        { value: 'driver', label: 'Set Default: "driver" (Vehicle Driver)' }
+                    ]
+                },
+                'user_id': { label: 'User ID', type: 'INT [Primary Key]', presets: [] },
+                'first_name': { label: 'First Name', type: 'VARCHAR(50) [Required]', presets: [] },
+                'last_name': { label: 'Last Name', type: 'VARCHAR(50) [Required]', presets: [] },
+                'email': { label: 'Email Address', type: 'VARCHAR(100) [Required]', presets: [] }
+            },
+            'vehicles': {
+                'driver_id': { label: 'Driver ID', type: 'INT [Foreign Key -> users.user_id]', presets: [] },
+                'vehicle_id': { label: 'Vehicle ID', type: 'INT [Primary Key]', presets: [] }
+            },
+            'rides': {
+                'rider_id': { label: 'Rider ID', type: 'INT [Foreign Key -> users.user_id]', presets: [] },
+                'driver_id': { label: 'Driver ID', type: 'INT [Foreign Key -> users.user_id]', presets: [] },
+                'ride_id': { label: 'Ride ID', type: 'INT [Primary Key]', presets: [] }
+            },
+            'payments': {
+                'ride_id': { label: 'Ride ID', type: 'INT [Foreign Key -> rides.ride_id]', presets: [] },
+                'user_id': { label: 'User ID', type: 'INT [Foreign Key -> users.user_id]', presets: [] },
+                'payment_id': { label: 'Payment ID', type: 'INT [Primary Key]', presets: [] }
+            },
+            'ratings': {
+                'ride_id': { label: 'Ride ID', type: 'INT [Foreign Key -> rides.ride_id]', presets: [] },
+                'rider_id': { label: 'Rider ID', type: 'INT [Foreign Key -> users.user_id]', presets: [] },
+                'driver_id': { label: 'Driver ID', type: 'INT [Foreign Key -> users.user_id]', presets: [] },
+                'rating_id': { label: 'Rating ID', type: 'INT [Primary Key]', presets: [] }
+            }
+        }[detectedTbl] || {};
+
+        missingFieldsList.innerHTML = missing.map(col => {
+            const info = columnPresets[col] || { label: col, type: 'Required Column', presets: [] };
+            const presetsHtml = (info.presets || []).map(p => `
+                <option value="${p.value}">${p.label}</option>
+            `).join('');
+
+            return `
+                <div class="missing-field-card" data-column="${escapeHtml(col)}">
+                    <div class="missing-field-top">
+                        <div>
+                            <span class="missing-field-name"><i data-lucide="alert-circle" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle; margin-right: 4px;"></i>${escapeHtml(col)}</span>
+                            <span class="missing-field-type" style="margin-left: 8px;">(${escapeHtml(info.type)})</span>
+                        </div>
+                        <span class="p-badge p-badge-amber" style="font-size: 0.72rem;">Missing from CSV</span>
+                    </div>
+                    <div class="missing-field-controls">
+                        <select class="missing-field-select" data-column="${escapeHtml(col)}">
+                            <option value="">-- Choose Resolution Action --</option>
+                            ${presetsHtml}
+                            <option value="__custom__">Enter Explicit Default Value...</option>
+                        </select>
+                        <input type="text" class="missing-field-custom-input" data-column="${escapeHtml(col)}" placeholder="Enter value for all rows..." style="display: none; width: 180px;" />
+                        <div class="missing-field-notice-container" id="notice-${escapeHtml(col)}" style="display: none;"></div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        // Attach listeners for selects and custom inputs
+        missingFieldsList.querySelectorAll('.missing-field-select').forEach(sel => {
+            sel.addEventListener('change', (e) => {
+                const col = e.target.getAttribute('data-column');
+                const card = e.target.closest('.missing-field-card');
+                const customInput = card.querySelector(`.missing-field-custom-input[data-column="${col}"]`);
+                const noticeContainer = card.querySelector(`#notice-${col}`);
+                const val = e.target.value;
+
+                if (val === '__custom__') {
+                    if (customInput) {
+                        customInput.style.display = 'inline-block';
+                        customInput.focus();
+                    }
+                    if (noticeContainer) noticeContainer.style.display = 'none';
+                } else if (val) {
+                    if (customInput) customInput.style.display = 'none';
+                    if (noticeContainer) {
+                        noticeContainer.style.display = 'inline-block';
+                        noticeContainer.innerHTML = `<span class="missing-field-notice"><i data-lucide="check"></i> Will apply '<strong>${escapeHtml(val)}</strong>' to all rows in uploaded dataset</span>`;
+                        if (window.lucide) lucide.createIcons();
+                    }
+                } else {
+                    if (customInput) customInput.style.display = 'none';
+                    if (noticeContainer) noticeContainer.style.display = 'none';
+                }
+            });
+        });
+
+        missingFieldsList.querySelectorAll('.missing-field-custom-input').forEach(inp => {
+            inp.addEventListener('input', (e) => {
+                const col = e.target.getAttribute('data-column');
+                const card = e.target.closest('.missing-field-card');
+                const noticeContainer = card.querySelector(`#notice-${col}`);
+                const val = e.target.value.trim();
+
+                if (val && noticeContainer) {
+                    noticeContainer.style.display = 'inline-block';
+                    noticeContainer.innerHTML = `<span class="missing-field-notice"><i data-lucide="check"></i> Will apply '<strong>${escapeHtml(val)}</strong>' to all rows in uploaded dataset</span>`;
+                    if (window.lucide) lucide.createIcons();
+                } else if (noticeContainer) {
+                    noticeContainer.style.display = 'none';
+                }
+            });
+        });
+
+        if (window.lucide) lucide.createIcons();
     }
 
     function renderColumnMappingCard(data) {
@@ -1403,6 +1804,22 @@ function initDataImport() {
             }
         });
 
+        // Collect explicit default values for missing required columns
+        const defaultValues = {};
+        const fieldCards = document.querySelectorAll('.missing-field-card');
+        fieldCards.forEach(card => {
+            const col = card.getAttribute('data-column');
+            const sel = card.querySelector('.missing-field-select');
+            const customInp = card.querySelector('.missing-field-custom-input');
+            if (sel && sel.value) {
+                if (sel.value === '__custom__' && customInp && customInp.value.trim()) {
+                    defaultValues[col] = customInp.value.trim();
+                } else if (sel.value !== '__custom__') {
+                    defaultValues[col] = sel.value;
+                }
+            }
+        });
+
         setWorkflowStep('validate');
         btnValidate.disabled = true;
         btnValidate.innerHTML = '<div class="loading-spinner"></div> Validating Schema, Types & PKs...';
@@ -1416,6 +1833,9 @@ function initDataImport() {
             formData.append('import_mode', importMode);
             if (Object.keys(customMappings).length > 0) {
                 formData.append('custom_mappings', JSON.stringify(customMappings));
+            }
+            if (Object.keys(defaultValues).length > 0) {
+                formData.append('default_values', JSON.stringify(defaultValues));
             }
 
             const res = await fetch('/api/import/validate', {
@@ -1439,6 +1859,9 @@ function initDataImport() {
                 };
                 refreshStagedTable();
                 showImportPreview(data.table_name, data.sample_records, data.columns, data.row_count);
+                if (missingFieldsCard) missingFieldsCard.style.display = 'none';
+            } else {
+                renderMissingFieldsCard(data);
             }
         } catch (err) {
             validationOutput.innerHTML = `<div class="structured-error-card"><div class="error-card-title">❌ Network Error</div><p>${escapeHtml(err.message)}</p></div>`;
@@ -1686,7 +2109,7 @@ function renderValidationResult(data) {
         statusIcon = 'help-circle';
     }
 
-    const isParseFailed = !isValid && (data.row_count === 0 || !data.columns || data.columns.length === 0 || state === 'CSV_PARSE_FAILED' || state === 'EMPTY_CSV');
+    const isParseFailed = (state === 'CSV_PARSE_FAILED' || state === 'EMPTY_CSV');
 
     let checkpointsHtml = '';
     if (isParseFailed) {
@@ -1711,9 +2134,9 @@ function renderValidationResult(data) {
             </div>
         `;
     } else {
-        const hasMissingReq = textErrors.some(e => e.toLowerCase().includes('missing required column')) || structuredErrors.some(e => e.error_type === 'missing_column');
+        const hasMissingReq = textErrors.some(e => e.toLowerCase().includes('missing required column') || e.toLowerCase().includes('null_required_value')) || structuredErrors.some(e => e.error_type === 'missing_required_column' || e.error_type === 'missing_column' || e.error_type === 'null_required_value');
         const hasPkDup = textErrors.some(e => e.toLowerCase().includes('duplicate primary key')) || structuredErrors.some(e => e.error_type === 'duplicate_primary_key' || e.error_type === 'existing_primary_key');
-        const hasTypeErr = textErrors.some(e => e.toLowerCase().includes('invalid timestamp') || e.toLowerCase().includes('nan') || e.toLowerCase().includes('type mismatch')) || structuredErrors.some(e => e.error_type === 'invalid_type' || e.error_type === 'timestamp_parse_error');
+        const hasTypeErr = textErrors.some(e => e.toLowerCase().includes('invalid ') || e.toLowerCase().includes('type mismatch')) || structuredErrors.some(e => e.error_type && (e.error_type.startsWith('invalid_') || e.error_type === 'timestamp_parse_error'));
 
         checkpointsHtml = `
             <div class="checkpoint-list">

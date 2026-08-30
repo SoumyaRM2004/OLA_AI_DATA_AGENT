@@ -99,76 +99,86 @@
 
             <!-- TAB 1: AI CHAT STUDIO -->
             <section id="chat-view" class="tab-pane active">
-                <div class="chat-container">
-                    <!-- Chat Management Toolbar -->
-                    <div class="chat-toolbar">
-                        <div class="chat-toolbar-left">
-                            <span class="chips-label"><i data-lucide="sparkles"></i> Try asking:</span>
-                        </div>
-                        <div class="chat-toolbar-actions">
-                            <button id="btn-new-chat" class="btn-chat-action" title="Start a fresh conversation">
-                                <i data-lucide="plus-circle"></i> <span>New Chat</span>
-                            </button>
-                            <button id="btn-clear-chat" class="btn-chat-action" title="Clear saved chat history">
-                                <i data-lucide="trash-2"></i> <span>Clear History</span>
-                            </button>
-                            <button id="btn-export-chat" class="btn-chat-action" title="Export conversation as JSON">
-                                <i data-lucide="download"></i> <span>Export Chat</span>
+                <div class="chat-studio-layout">
+                    <!-- Chat History Sidebar -->
+                    <aside class="chat-sessions-sidebar" id="chat-sessions-sidebar">
+                        <div class="chat-sidebar-top">
+                            <button id="btn-new-chat" class="btn-primary-new-chat" title="Start a new conversation">
+                                <i data-lucide="plus"></i> <span>New Chat</span>
                             </button>
                         </div>
-                    </div>
+                        <div class="chat-sidebar-section-title">
+                            <span>Recent Chats</span>
+                        </div>
+                        <div class="chat-sessions-list" id="chat-sessions-list">
+                            <!-- Populated dynamically via JS -->
+                        </div>
+                    </aside>
 
-                    <!-- Suggested Query Chips -->
-                    <div class="query-chips">
-                        <button class="chip" data-prompt="Compare ride cancellation rates during rainy and non-rainy periods.">🌦️ Rain vs. Cancellations</button>
-                        <button class="chip" data-prompt="Compare average surge multiplier during rainy and non-rainy periods.">📈 Surge in Rainy Periods</button>
-                        <button class="chip" data-prompt="Compare average rainfall across the 8 cities.">🌧️ Rainfall Across 8 Cities</button>
-                        <button class="chip" data-prompt="Which city had the highest average rainfall?">🥇 Highest Rainfall City</button>
-                        <button class="chip" data-prompt="Compare average fare on rainy versus non-rainy days.">💵 Fare: Rainy vs Dry Days</button>
-                        <button class="chip" data-prompt="What are the top 5 highest rated drivers with their average ratings?">🏆 Top 5 Drivers</button>
-                        <button class="chip" data-prompt="Extract weather data for all 8 ride-hailing cities and save to data/extract as csv">⚡ Extract 8 Cities Weather</button>
-                    </div>
-
-                    <!-- Messages Stream -->
-                    <div class="messages-area" id="messages-area">
-                        <!-- Welcome Message -->
-                        <div class="message-card agent-message">
-                            <div class="message-header">
-                                <div class="avatar agent-avatar"><i data-lucide="bot"></i></div>
-                                <div class="message-meta">
-                                    <span class="sender-name">OLA AI Data Agent</span>
-                                    <span class="message-time">Just now</span>
+                    <!-- Main Chat Area -->
+                    <div class="chat-container">
+                        <!-- Chat Management Top Header -->
+                        <div class="chat-active-bar">
+                            <div class="chat-title-wrapper">
+                                <div class="chat-title-display" id="chat-title-display">
+                                    <span class="chat-active-bullet">●</span>
+                                    <h3 id="current-chat-title">New Chat</h3>
+                                    <button id="btn-rename-active-chat" class="btn-chat-icon" title="Rename conversation">
+                                        <i data-lucide="edit-3"></i>
+                                    </button>
+                                </div>
+                                <div class="chat-rename-form hidden" id="chat-rename-form">
+                                    <input type="text" id="chat-rename-input" class="chat-rename-input" placeholder="Enter chat title..." maxlength="60">
+                                    <button id="btn-save-rename" class="btn-save-rename"><i data-lucide="check"></i></button>
+                                    <button id="btn-cancel-rename" class="btn-cancel-rename"><i data-lucide="x"></i></button>
                                 </div>
                             </div>
-                            <div class="message-body">
-                                <p>Welcome to the <strong>OLA Mobility Intelligence Platform</strong>! I am your AI Data Agent combining synthetic ride-hailing datasets with external <strong>Open-Meteo weather data across all 8 Canadian ride-hailing cities</strong>.</p>
-                                <ul>
-                                    <li>📊 <strong>SQL Analytics</strong>: Query rides, fares, driver ratings, and correlate ride metrics with weather conditions (rain vs. cancellations, surge pricing) across Calgary, Edmonton, Halifax, Montreal, Ottawa, Toronto, Vancouver, and Winnipeg.</li>
-                                    <li>🌦️ <strong>Weather & Mobility ETL</strong>: Extract historical hourly weather data for all 8 cities from Open-Meteo Archive API and transform datasets using Pandas.</li>
-                                </ul>
-                                <p>Every SQL query is evaluated by an automated <strong>Security Judge</strong> before execution for safe read-only analytics!</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Chat Input Box -->
-                    <div class="chat-input-wrapper">
-                        <form id="chat-form" class="chat-form">
-                            <div class="input-container">
-                                <i data-lucide="search" class="input-icon"></i>
-                                <input 
-                                    type="text" 
-                                    id="chat-input" 
-                                    placeholder="Ask anything about OLA rides, 8-city weather correlation, fares, or request an ETL extraction..."
-                                    autocomplete="off"
-                                    required
-                                >
-                                <button type="submit" id="send-btn" class="btn-send">
-                                    <span>Ask Agent</span>
-                                    <i data-lucide="send"></i>
+                            <div class="chat-toolbar-actions">
+                                <button id="btn-clear-chat" class="btn-chat-action" title="Clear messages in current chat">
+                                    <i data-lucide="trash-2"></i> <span>Clear</span>
+                                </button>
+                                <button id="btn-export-chat" class="btn-chat-action" title="Export conversation as JSON">
+                                    <i data-lucide="download"></i> <span>Export</span>
                                 </button>
                             </div>
-                        </form>
+                        </div>
+
+                        <!-- Suggested Query Chips -->
+                        <div class="query-chips">
+                            <button class="chip" data-prompt="How many users are there?">👥 How many users?</button>
+                            <button class="chip" data-prompt="How many vehicles are there?">🚗 How many vehicles?</button>
+                            <button class="chip" data-prompt="How many rides are there?">🚕 How many rides?</button>
+                            <button class="chip" data-prompt="How many payments are there?">💳 How many payments?</button>
+                            <button class="chip" data-prompt="How many ratings are there?">⭐ How many ratings?</button>
+                            <button class="chip" data-prompt="Compare ride cancellation rates during rainy and non-rainy periods.">🌦️ Rain vs. Cancellations</button>
+                            <button class="chip" data-prompt="Compare average surge multiplier during rainy and non-rainy periods.">📈 Surge in Rainy Periods</button>
+                            <button class="chip" data-prompt="What are the top 5 highest rated drivers with their average ratings?">🏆 Top 5 Drivers</button>
+                        </div>
+
+                        <!-- Messages Stream -->
+                        <div class="messages-area" id="messages-area">
+                            <!-- Welcome Message or active conversation populated via JS -->
+                        </div>
+
+                        <!-- Chat Input Box -->
+                        <div class="chat-input-wrapper">
+                            <form id="chat-form" class="chat-form">
+                                <div class="input-container">
+                                    <i data-lucide="search" class="input-icon"></i>
+                                    <input 
+                                        type="text" 
+                                        id="chat-input" 
+                                        placeholder="Ask anything about OLA rides, users, vehicles, payments, ratings, weather correlation, or ETL tasks..."
+                                        autocomplete="off"
+                                        required
+                                    >
+                                    <button type="submit" id="send-btn" class="btn-send">
+                                        <span>Ask Agent</span>
+                                        <i data-lucide="send"></i>
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -176,6 +186,17 @@
             <!-- TAB 2: OVERVIEW / KPI DASHBOARD -->
             <section id="overview-view" class="tab-pane">
                 <div class="dashboard-grid">
+                    <!-- Dashboard Live Status & Refresh Bar -->
+                    <div class="dashboard-action-bar">
+                        <div class="db-live-indicator">
+                            <span class="indicator-dot live"></span>
+                            <span class="indicator-text">PostgreSQL Authoritative Source of Truth</span>
+                        </div>
+                        <button class="btn-refresh" id="refresh-stats-btn-top">
+                            <i data-lucide="rotate-cw"></i> <span>Refresh Dashboard</span>
+                        </button>
+                    </div>
+
                     <!-- KPI Cards -->
                     <div class="kpi-row">
                         <div class="kpi-card">
@@ -265,7 +286,9 @@
             <section id="db-view" class="tab-pane">
                 <div class="db-explorer-container">
                     <div class="db-sidebar">
-                        <h3><i data-lucide="layers"></i> Database Tables</h3>
+                        <div class="db-sidebar-header">
+                            <h3><i data-lucide="layers"></i> Database Tables</h3>
+                        </div>
                         <div class="table-list" id="db-table-list">
                             <!-- Populated via JS -->
                         </div>
@@ -279,6 +302,9 @@
                             </div>
                             <div class="table-actions">
                                 <input type="text" id="db-search-input" placeholder="Search rows..." class="db-search">
+                                <button class="btn-refresh" id="btn-refresh-db-explorer" title="Query live PostgreSQL data">
+                                    <i data-lucide="rotate-cw"></i> <span>Refresh Data</span>
+                                </button>
                             </div>
                         </div>
 
@@ -523,6 +549,18 @@
                                             <tbody id="column-mapping-tbody"></tbody>
                                         </table>
                                     </div>
+                                </div>
+
+                                <!-- Missing Required Fields Card (Dynamic) -->
+                                <div id="missing-fields-card" class="missing-fields-box" style="display: none;">
+                                    <div class="missing-header">
+                                        <h4><i data-lucide="alert-triangle"></i> Missing Required Fields Resolution</h4>
+                                        <span class="p-badge p-badge-amber">Action Required</span>
+                                    </div>
+                                    <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 10px;">
+                                        The uploaded CSV is missing required canonical fields. You must explicitly resolve each missing field before staging.
+                                    </p>
+                                    <div id="missing-fields-list" class="missing-fields-container"></div>
                                 </div>
 
                                 <button type="submit" class="btn-primary" id="btn-validate-csv" disabled>
