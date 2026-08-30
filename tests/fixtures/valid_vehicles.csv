@@ -1,0 +1,3 @@
+vehicle_id,driver_id,make,model,year,license_plate,color,is_active
+90001,90002,Toyota,Camry,2023,TEST-9001,Silver,True
+90002,90002,Honda,Accord,2024,TEST-9002,Blue,True

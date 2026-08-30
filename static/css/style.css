@@ -1459,19 +1459,223 @@ body {
     flex-shrink: 0;
 }
 
-.import-error-list {
-    margin-top: 10px;
-    padding: 10px 14px;
-    background: rgba(239, 68, 68, 0.15);
-    border-left: 3px solid var(--accent-red);
-    border-radius: 4px;
-    color: #FECACA;
-    font-size: 0.84rem;
+/* Import Workflow Tracker Bar */
+.import-workflow-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--border-radius-md);
+    padding: 12px 18px;
+    margin-bottom: 20px;
+    overflow-x: auto;
+    gap: 8px;
 }
 
-.import-error-list ul {
-    margin-left: 18px;
-    margin-top: 6px;
+.workflow-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    font-weight: 500;
+    white-space: nowrap;
+    transition: var(--transition-fast);
+}
+
+.workflow-step.active {
+    color: var(--primary-emerald);
+    font-weight: 600;
+}
+
+.workflow-step.completed {
+    color: var(--accent-cyan);
+}
+
+.step-dot {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.08);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--text-dim);
+}
+
+.workflow-step.active .step-dot {
+    background: var(--primary-emerald);
+    color: #000;
+}
+
+.workflow-step.completed .step-dot {
+    background: rgba(6, 182, 212, 0.2);
+    color: var(--accent-cyan);
+    border: 1px solid var(--accent-cyan);
+}
+
+.workflow-arrow {
+    color: rgba(255, 255, 255, 0.2);
+    display: flex;
+    align-items: center;
+}
+
+.workflow-arrow i {
+    width: 16px;
+    height: 16px;
+}
+
+/* Column Mapping Box */
+.column-mapping-box {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--border-radius-md);
+    padding: 14px 16px;
+    margin-top: 10px;
+}
+
+.mapping-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.mapping-header h4 {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--text-main);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.confidence-badge {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.74rem;
+    font-weight: 600;
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--primary-emerald);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.confidence-badge.medium {
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--accent-amber);
+    border-color: rgba(245, 158, 11, 0.3);
+}
+
+.mapping-table {
+    font-size: 0.8rem;
+    width: 100%;
+}
+
+.mapping-table select {
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-main);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.78rem;
+    width: 100%;
+}
+
+/* Structured Error Cards */
+.structured-error-card {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-left: 4px solid var(--accent-red);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    color: #FCA5A5;
+}
+
+.error-card-title {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--accent-red);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.error-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 8px 14px;
+    background: rgba(0, 0, 0, 0.25);
+    padding: 10px 12px;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    font-size: 0.8rem;
+}
+
+.error-meta-item strong {
+    color: var(--text-muted);
+    display: block;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.error-meta-item span {
+    color: #F3F4F6;
+    font-family: var(--font-mono);
+    word-break: break-all;
+}
+
+.error-explanation-box {
+    margin-bottom: 8px;
+    font-size: 0.84rem;
+    line-height: 1.5;
+    color: #FECACA;
+}
+
+.error-suggested-box {
+    padding: 8px 12px;
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.2);
+    border-radius: 6px;
+    font-size: 0.82rem;
+    color: #A7F3D0;
+    margin-bottom: 8px;
+}
+
+.error-suggested-box strong {
+    color: var(--primary-emerald);
+}
+
+.error-tech-details {
+    margin-top: 8px;
+    font-size: 0.78rem;
+}
+
+.error-tech-details summary {
+    cursor: pointer;
+    color: var(--text-dim);
+    outline: none;
+}
+
+.error-tech-details pre {
+    background: rgba(0, 0, 0, 0.4);
+    padding: 8px 10px;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 0.74rem;
+    margin-top: 4px;
+    color: #F87171;
+}
+
+.report-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 14px;
 }
 
 .staged-summary-box {

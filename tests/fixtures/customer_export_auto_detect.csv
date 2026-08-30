@@ -1,0 +1,3 @@
+user_id,first_name,last_name,email,phone,city,province,user_type,signup_date,is_active
+90020,Charlie,Brown,charlie90020@example.com,+15553334444,Ottawa,ON,rider,2025-05-12,True
+90021,Diana,Prince,diana90021@example.com,+15555556666,Toronto,ON,driver,2025-05-13,True

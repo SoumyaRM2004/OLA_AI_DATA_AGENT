@@ -4,6 +4,8 @@ import sys
 import ast
 import ipaddress
 import urllib.parse
+import time
+from datetime import datetime, date
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 import requests
@@ -26,6 +28,149 @@ CITY_COORDINATES: Dict[str, Dict[str, Any]] = {
     "Vancouver": {"latitude": 49.2827, "longitude": -123.1207, "province": "BC"},
     "Winnipeg": {"latitude": 49.8951, "longitude": -97.1384, "province": "MB"},
 }
+
+
+def normalize_date_str(date_str: Optional[str], default: str = "2025-01-01") -> Tuple[bool, str]:
+    """
+    Validates and normalizes date strings into standard 'YYYY-MM-DD' API format.
+    Accepts formats such as 'YYYY-MM-DD', 'DD-MM-YYYY', 'MM/DD/YYYY', 'DD/MM/YYYY', etc.
+    """
+    if not date_str or not str(date_str).strip():
+        return True, default
+    s = str(date_str).strip()
+    try:
+        dt = datetime.strptime(s, "%Y-%m-%d")
+        return True, dt.strftime("%Y-%m-%d")
+    except ValueError:
+        pass
+
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d", "%d.%m.%Y", "%Y.%m.%d"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return True, dt.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    try:
+        dt = pd.to_datetime(s, errors="raise")
+        return True, dt.strftime("%Y-%m-%d")
+    except Exception:
+        return False, f"Invalid date format '{s}'. Expected 'YYYY-MM-DD' or 'DD-MM-YYYY'."
+
+
+def fetch_and_validate_json_api(
+    url: str,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: int = 25,
+    context_label: Optional[str] = None
+) -> Tuple[bool, Optional[Any], Optional[str]]:
+    """
+    Safely executes an HTTP GET request to an external API with status, Content-Type,
+    and payload validation before JSON parsing.
+    
+    Returns:
+        (is_success, parsed_json_or_None, error_message_or_None)
+    """
+    ctx_prefix = f"City: {context_label}\n" if context_label else ""
+    try:
+        resp = requests.get(
+            url,
+            headers=headers or {"User-Agent": "OLA-AI-DataAgent/1.0"},
+            timeout=timeout
+        )
+    except requests.exceptions.Timeout:
+        return False, None, (
+            f"API request timed out ({timeout}s).\n"
+            f"{ctx_prefix}"
+            f"Endpoint: {url}\n"
+            f"Suggested action: Check internet connectivity or try again later."
+        )
+    except requests.exceptions.ConnectionError as e:
+        return False, None, (
+            f"API connection error.\n"
+            f"{ctx_prefix}"
+            f"Endpoint: {url}\n"
+            f"Reason: Unable to connect to remote host ({e})."
+        )
+    except requests.exceptions.RequestException as e:
+        return False, None, (
+            f"API request error.\n"
+            f"{ctx_prefix}"
+            f"Endpoint: {url}\n"
+            f"Reason: {str(e)}"
+        )
+
+    # 1. Handle rate limiting with automatic backoff retry
+    if resp.status_code == 429:
+        time.sleep(1.5)
+        try:
+            resp = requests.get(
+                url,
+                headers=headers or {"User-Agent": "OLA-AI-DataAgent/1.0"},
+                timeout=timeout
+            )
+        except Exception:
+            pass
+
+    # 2. Non-2xx status handling
+    if resp.status_code >= 400:
+        reason_msg = ""
+        content_type = resp.headers.get("Content-Type", "").lower()
+        if "application/json" in content_type and resp.text.strip():
+            try:
+                err_json = resp.json()
+                if isinstance(err_json, dict) and "reason" in err_json:
+                    reason_msg = f"Reason: {err_json['reason']}\n"
+                elif isinstance(err_json, dict) and "error" in err_json:
+                    reason_msg = f"Reason: {err_json['error']}\n"
+            except Exception:
+                pass
+        if not reason_msg:
+            if resp.status_code == 429:
+                reason_msg = "Reason: API rate limit exceeded.\n"
+            elif resp.status_code == 404:
+                reason_msg = "Reason: Endpoint resource not found (HTTP 404).\n"
+            elif resp.status_code == 500:
+                reason_msg = "Reason: Remote server internal error (HTTP 500).\n"
+            else:
+                reason_msg = f"Reason: HTTP {resp.status_code} error.\n"
+
+        return False, None, (
+            f"API request failed\n"
+            f"{ctx_prefix}"
+            f"Status: {resp.status_code}\n"
+            f"Endpoint: {url}\n"
+            f"{reason_msg.rstrip()}\n"
+            f"Suggested action: Verify request parameters (dates, coordinates) or rate limits."
+        )
+
+    # 2. Empty response body check
+    body_text = resp.text.strip() if resp.text else ""
+    if not body_text:
+        return False, None, (
+            f"API returned an empty response.\n"
+            f"{ctx_prefix}"
+            f"Status: {resp.status_code}\n"
+            f"Endpoint: {url}\n"
+            f"Suggested action: Verify that the API endpoint returns data for the requested query."
+        )
+
+    # 3. Content-Type and JSON validity
+    content_type = resp.headers.get("Content-Type", "").lower()
+    try:
+        data = resp.json()
+        return True, data, None
+    except Exception:
+        rec_type = content_type.split(";")[0].strip() if content_type else "unknown"
+        return False, None, (
+            f"API returned an unexpected response format.\n"
+            f"{ctx_prefix}"
+            f"Expected: JSON\n"
+            f"Received: {rec_type}\n"
+            f"Status: {resp.status_code}\n"
+            f"Endpoint: {url}\n"
+            f"Problem: Failed to parse JSON response body."
+        )
 
 # ============================================================
 # AST SECURITY VALIDATOR FOR PYTHON TRANSFORMATION SCRIPTS
@@ -192,6 +337,17 @@ class ETLTools:
         Extracts hourly historical weather data for all 8 ride-hailing cities from Open-Meteo Archive API
         and consolidates them into a single dataset within data/extract.
         """
+        # Validate and normalize dates
+        valid_start, norm_start = normalize_date_str(start_date, "2025-01-01")
+        if not valid_start:
+            return f"Date Validation Error: {norm_start}"
+        valid_end, norm_end = normalize_date_str(end_date, "2025-01-31")
+        if not valid_end:
+            return f"Date Validation Error: {norm_end}"
+
+        if norm_start > norm_end:
+            return f"Date Validation Error: Start date ({norm_start}) cannot be after end date ({norm_end})."
+
         try:
             resolved_folder = self._resolve_safe_data_path(output_folder)
             resolved_folder.mkdir(parents=True, exist_ok=True)
@@ -202,61 +358,70 @@ class ETLTools:
         dfs = []
         city_summaries = []
 
-        try:
-            for city, coords in CITY_COORDINATES.items():
-                lat = coords["latitude"]
-                lon = coords["longitude"]
-                url = (
-                    f"https://archive-api.open-meteo.com/v1/archive?"
-                    f"latitude={lat}&longitude={lon}&start_date={start_date}&end_date={end_date}&"
-                    f"hourly=temperature_2m,precipitation,rain,weather_code"
+        for city, coords in CITY_COORDINATES.items():
+            lat = coords["latitude"]
+            lon = coords["longitude"]
+
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                return f"Coordinate Error: Invalid coordinates for city '{city}' (lat: {lat}, lon: {lon})."
+
+            url = (
+                f"https://archive-api.open-meteo.com/v1/archive?"
+                f"latitude={lat}&longitude={lon}&start_date={norm_start}&end_date={norm_end}&"
+                f"hourly=temperature_2m,precipitation,rain,weather_code"
+            )
+
+            # Validate URL before making request
+            is_safe, url_err = self._validate_safe_url(url)
+            if not is_safe:
+                return f"URL Security Error: {url_err}"
+
+            is_ok, data, err_msg = fetch_and_validate_json_api(
+                url, headers=headers, timeout=25, context_label=city
+            )
+            if not is_ok:
+                return err_msg or f"Error fetching weather data for {city}."
+
+            if not isinstance(data, dict) or "hourly" not in data or "time" not in data["hourly"]:
+                return (
+                    f"API returned an unexpected response structure for {city}.\n"
+                    f"Expected 'hourly.time' data array but received: {list(data.keys()) if isinstance(data, dict) else type(data)}"
                 )
 
-                # Validate URL before making request
-                is_safe, url_err = self._validate_safe_url(url)
-                if not is_safe:
-                    return f"URL Security Error: {url_err}"
+            hourly = data["hourly"]
+            df = pd.DataFrame(hourly)
+            df.rename(columns={
+                "time": "recorded_at",
+                "temperature_2m": "temperature_c",
+                "precipitation": "precipitation_mm",
+                "rain": "rain_mm",
+                "weather_code": "weather_code"
+            }, inplace=True)
 
-                resp = requests.get(url, headers=headers, timeout=20)
-                resp.raise_for_status()
-                data = resp.json()
+            df["latitude"] = lat
+            df["longitude"] = lon
+            df["city"] = city
+            df["is_rainy"] = (df["rain_mm"] > 0.0) | (df["precipitation_mm"] > 0.0)
 
-                if "hourly" not in data or "time" not in data["hourly"]:
-                    continue
+            dfs.append(df)
+            city_summaries.append(f"• {city}: {len(df)} hrs ({df['is_rainy'].sum()} rainy/precip hrs)")
 
-                hourly = data["hourly"]
-                df = pd.DataFrame(hourly)
-                df.rename(columns={
-                    "time": "recorded_at",
-                    "temperature_2m": "temperature_c",
-                    "precipitation": "precipitation_mm",
-                    "rain": "rain_mm",
-                    "weather_code": "weather_code"
-                }, inplace=True)
+        if not dfs:
+            return "Error: No weather data could be extracted from Open-Meteo."
 
-                df["latitude"] = lat
-                df["longitude"] = lon
-                df["city"] = city
-                df["is_rainy"] = (df["rain_mm"] > 0.0) | (df["precipitation_mm"] > 0.0)
+        final_df = pd.concat(dfs, ignore_index=True)
 
-                dfs.append(df)
-                city_summaries.append(f"• {city}: {len(df)} hrs ({df['is_rainy'].sum()} rainy/precip hrs)")
+        cols = [
+            "recorded_at", "city", "latitude", "longitude",
+            "temperature_c", "precipitation_mm", "rain_mm",
+            "weather_code", "is_rainy"
+        ]
+        final_df = final_df[cols]
 
-            if not dfs:
-                return "Error: No weather data could be extracted from Open-Meteo."
+        fmt = format.lower().strip()
+        filename = resolved_folder / f"weather_data.{fmt}"
 
-            final_df = pd.concat(dfs, ignore_index=True)
-
-            cols = [
-                "recorded_at", "city", "latitude", "longitude",
-                "temperature_c", "precipitation_mm", "rain_mm",
-                "weather_code", "is_rainy"
-            ]
-            final_df = final_df[cols]
-
-            fmt = format.lower().strip()
-            filename = resolved_folder / f"weather_data.{fmt}"
-
+        try:
             if fmt == "csv":
                 final_df.to_csv(filename, index=False)
             elif fmt == "json":
@@ -265,18 +430,18 @@ class ETLTools:
                 final_df.to_parquet(filename, index=False)
             else:
                 return f"Error: Unsupported format '{format}' (permitted: csv, json, parquet)"
-
-            return (
-                f"Successfully extracted weather data for all 8 ride-hailing cities ({len(final_df)} total records).\n"
-                f"Saved to: {filename}\n"
-                f"Date Range: {start_date} to {end_date}\n\n"
-                f"City Breakdown:\n" + "\n".join(city_summaries)
-            )
-
-        except requests.exceptions.RequestException as e:
-            return f"API Network Error: {e}"
         except Exception as e:
-            return f"Error during multi-city extraction: {e}"
+            return f"Error saving dataset in '{fmt}' format: {e}"
+
+        return (
+            f"Extraction successful\n\n"
+            f"Cities: {len(CITY_COORDINATES)}\n"
+            f"Date range: {norm_start} to {norm_end}\n"
+            f"Records: {len(final_df):,}\n"
+            f"Format: {fmt.upper()}\n"
+            f"Output: {output_folder}/weather_data.{fmt}\n\n"
+            f"City Breakdown:\n" + "\n".join(city_summaries)
+        )
 
     def extract_load(
         self,
@@ -300,15 +465,17 @@ class ETLTools:
             return f"Filesystem Security Error: {e}"
 
         # If user requests all cities or weather without specific coords, run multi-city extraction
-        if "all" in url.lower() or "8" in url.lower():
+        if "all" in url.lower() or "8" in url.lower() or (city_name and "all" in city_name.lower()):
             return self.extract_multi_city_weather(output_folder=output_folder, format=format)
 
-        try:
-            headers = {"User-Agent": "OLA-AI-DataAgent/1.0"}
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            data = response.json()
+        headers = {"User-Agent": "OLA-AI-DataAgent/1.0"}
+        is_ok, data, error_text = fetch_and_validate_json_api(
+            url, headers=headers, timeout=25, context_label=city_name
+        )
+        if not is_ok:
+            return error_text or f"API extraction failed for {url}"
 
+        try:
             # Specialized handling for Open-Meteo Weather API structure
             if isinstance(data, dict) and "hourly" in data and isinstance(data["hourly"], dict) and "time" in data["hourly"]:
                 hourly = data["hourly"]
@@ -354,7 +521,7 @@ class ETLTools:
                     df = pd.json_normalize(data)
                 base_filename = "extracted_data"
             else:
-                return f"Error: Unsupported JSON response structure: {type(data)}"
+                return f"API returned an unexpected response format: Unsupported JSON data type '{type(data).__name__}'."
 
             fmt = format.lower().strip()
             filename = resolved_folder / f"{base_filename}.{fmt}"
@@ -366,18 +533,18 @@ class ETLTools:
             elif fmt == "parquet":
                 df.to_parquet(filename, index=False)
             else:
-                return f"Error: Unsupported format '{format}'"
+                return f"Error: Unsupported format '{format}' (permitted: csv, json, parquet)"
 
             return (
-                f"Successfully extracted {len(df)} records from API.\n"
-                f"Saved to: {filename}\n"
-                f"Columns: {', '.join(list(df.columns)[:8])}\n"
+                f"Extraction successful\n\n"
+                f"City: {city_name or 'Custom API'}\n"
+                f"Records: {len(df):,}\n"
+                f"Format: {fmt.upper()}\n"
+                f"Output: {output_folder}/{base_filename}.{fmt}\n"
                 f"Date Range: {df['recorded_at'].min() if 'recorded_at' in df.columns else 'N/A'} to "
                 f"{df['recorded_at'].max() if 'recorded_at' in df.columns else 'N/A'}"
             )
 
-        except requests.exceptions.RequestException as e:
-            return f"API Network Error: {e}"
         except Exception as e:
             return f"Error during data extraction: {e}"
 

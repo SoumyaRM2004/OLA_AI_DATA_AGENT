@@ -965,16 +965,46 @@ function initEtlStudio() {
                         output_folder: folder
                     })
                 });
-                const data = await res.json();
+
+                const contentType = res.headers.get('content-type') || '';
+                let data = {};
+                if (contentType.includes('application/json')) {
+                    data = await res.json();
+                } else {
+                    const rawText = await res.text();
+                    data = { success: false, error: `Server returned non-JSON response (HTTP ${res.status}): ${rawText.slice(0, 250)}` };
+                }
+
+                if (!res.ok || data.success === false) {
+                    const errorText = data.error || data.message || `Extraction failed with HTTP status ${res.status}`;
+                    outputBox.innerHTML = `
+                        <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid var(--accent-red); padding: 12px; border-radius: 8px; color: #FECACA; margin-top: 10px;">
+                            <div style="display: flex; align-items: center; gap: 6px; color: var(--accent-red); font-weight: 600; margin-bottom: 6px;">
+                                <i data-lucide="alert-octagon"></i> Extraction Failed
+                            </div>
+                            <pre style="white-space: pre-wrap; font-family: var(--font-mono); font-size: 0.8rem; margin: 0; color: #FECACA;">${escapeHtml(errorText)}</pre>
+                        </div>
+                    `;
+                } else {
+                    outputBox.innerHTML = `
+                        <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid var(--primary-emerald); padding: 12px; border-radius: 8px; color: #D1D5DB; margin-top: 10px;">
+                            <div style="display: flex; align-items: center; gap: 6px; color: var(--primary-emerald); font-weight: 600; margin-bottom: 6px;">
+                                <i data-lucide="check-circle-2"></i> Extraction Result
+                            </div>
+                            <pre style="white-space: pre-wrap; font-family: var(--font-mono); font-size: 0.8rem; margin-top: 6px;">${escapeHtml(data.message)}</pre>
+                        </div>
+                    `;
+                    loadDataFiles();
+                }
+            } catch (err) {
                 outputBox.innerHTML = `
-                    <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid var(--primary-emerald); padding: 12px; border-radius: 8px; color: #D1D5DB; margin-top: 10px;">
-                        <strong style="color: var(--primary-emerald);">Result:</strong>
-                        <pre style="white-space: pre-wrap; font-family: var(--font-mono); font-size: 0.8rem; margin-top: 6px;">${escapeHtml(data.message)}</pre>
+                    <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid var(--accent-red); padding: 12px; border-radius: 8px; color: #FECACA; margin-top: 10px;">
+                        <div style="display: flex; align-items: center; gap: 6px; color: var(--accent-red); font-weight: 600; margin-bottom: 6px;">
+                            <i data-lucide="alert-octagon"></i> Network Error
+                        </div>
+                        <pre style="white-space: pre-wrap; font-family: var(--font-mono); font-size: 0.8rem; margin: 0; color: #FECACA;">${escapeHtml(err.message)}</pre>
                     </div>
                 `;
-                loadDataFiles();
-            } catch (err) {
-                outputBox.innerHTML = `<p style="color: var(--accent-red);">Extraction failed: ${err.message}</p>`;
             } finally {
                 btn.disabled = false;
                 btn.innerHTML = '<i data-lucide="play"></i> Extract Weather Dataset';
@@ -1138,6 +1168,25 @@ async function previewFileContent(filePath) {
    ========================================================================== */
 
 let stagedDatasetsState = {};
+let lastValidationResult = null;
+let currentInspectionData = null;
+
+function setWorkflowStep(stepName) {
+    const steps = ['upload', 'detect', 'map', 'validate', 'stage', 'load'];
+    const targetIdx = steps.indexOf(stepName);
+    if (targetIdx === -1) return;
+
+    steps.forEach((s, idx) => {
+        const el = document.getElementById(`step-${s}`);
+        if (!el) return;
+        el.classList.remove('active', 'completed');
+        if (idx < targetIdx) {
+            el.classList.add('completed');
+        } else if (idx === targetIdx) {
+            el.classList.add('active');
+        }
+    });
+}
 
 function initDataImport() {
     const uploadForm = document.getElementById('import-upload-form');
@@ -1145,25 +1194,114 @@ function initDataImport() {
     const dropArea = document.getElementById('file-drop-area');
     const selectedBadge = document.getElementById('selected-file-name');
     const targetSelect = document.getElementById('import-target-table');
+    const modeSelect = document.getElementById('import-mode-select');
     const btnValidate = document.getElementById('btn-validate-csv');
     const validationOutput = document.getElementById('validation-output');
     const btnLoadDb = document.getElementById('btn-load-database');
     const btnClearStaged = document.getElementById('btn-clear-staged');
     const loadOutput = document.getElementById('load-db-output');
+    const mappingCard = document.getElementById('column-mapping-card');
+    const mappingTbody = document.getElementById('column-mapping-tbody');
+    const confidenceBadge = document.getElementById('detection-confidence-badge');
+    const btnDownloadNorm = document.getElementById('btn-download-canonical-csv');
 
     if (!uploadForm) return;
 
     function updateValidateButtonState() {
-        const hasDatasetType = targetSelect && targetSelect.value.trim() !== '';
         const hasFile = fileInput && fileInput.files && fileInput.files.length > 0;
         if (btnValidate) {
-            btnValidate.disabled = !(hasDatasetType && hasFile);
+            btnValidate.disabled = !hasFile;
         }
+    }
+
+    // Fast Inspect when file is selected or dropped
+    async function inspectSelectedFile(file) {
+        if (!file) return;
+        setWorkflowStep('detect');
+        const datasetType = targetSelect ? targetSelect.value : 'auto';
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('dataset_type', datasetType);
+
+        try {
+            const res = await fetch('/api/import/inspect', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await res.json();
+            currentInspectionData = data;
+
+            if (data.detected_dataset && data.detected_dataset !== 'unknown') {
+                if (targetSelect && (targetSelect.value === 'auto' || !targetSelect.value)) {
+                    targetSelect.value = data.detected_dataset;
+                }
+                setWorkflowStep('map');
+                renderColumnMappingCard(data);
+            }
+        } catch (err) {
+            console.warn('Inspect error:', err);
+        }
+    }
+
+    function renderColumnMappingCard(data) {
+        if (!mappingCard || !mappingTbody) return;
+        mappingCard.style.display = 'block';
+
+        if (confidenceBadge) {
+            const conf = data.confidence || 'Medium';
+            confidenceBadge.textContent = `${conf} Confidence (${data.confidence_score || 0}%)`;
+            confidenceBadge.className = `confidence-badge ${conf.toLowerCase() === 'medium' ? 'medium' : ''}`;
+        }
+
+        const details = data.mapping_details || [];
+        const detectedTbl = data.detected_dataset || 'users';
+
+        // Canonical column options
+        const schemaCols = {
+            'users': ['user_id', 'first_name', 'last_name', 'email', 'phone', 'city', 'province', 'user_type', 'signup_date', 'is_active'],
+            'vehicles': ['vehicle_id', 'driver_id', 'make', 'model', 'year', 'license_plate', 'color', 'is_active'],
+            'rides': ['ride_id', 'rider_id', 'driver_id', 'vehicle_id', 'pickup_latitude', 'pickup_longitude', 'dropoff_latitude', 'dropoff_longitude', 'requested_at', 'pickup_time', 'dropoff_time', 'fare', 'distance_km', 'duration_minutes', 'surge_multiplier', 'status', 'cancellation_reason'],
+            'payments': ['payment_id', 'ride_id', 'user_id', 'amount', 'payment_method', 'payment_status', 'transaction_id', 'payment_time'],
+            'ratings': ['rating_id', 'ride_id', 'rider_id', 'driver_id', 'rating', 'comment', 'rated_at']
+        }[detectedTbl] || [];
+
+        mappingTbody.innerHTML = details.map((item, idx) => {
+            const isMapped = item.canonical !== null && item.canonical !== undefined;
+            const statusClass = item.status === 'exact' ? 'safe' : (item.status === 'alias' ? 'safe' : 'p-badge-red');
+            const statusLabel = item.status === 'exact' ? 'Exact Match' : (item.status === 'alias' ? 'Alias Matched' : 'Extra Column');
+
+            const optionsHtml = `
+                <option value="__ignore__" ${!isMapped ? 'selected' : ''}>-- Ignore / Extra Column --</option>
+                ${schemaCols.map(c => `
+                    <option value="${c}" ${item.canonical === c ? 'selected' : ''}>${c}</option>
+                `).join('')}
+            `;
+
+            return `
+                <tr>
+                    <td><code>${escapeHtml(item.uploaded)}</code></td>
+                    <td>
+                        <select class="mapping-col-select" data-uploaded="${escapeHtml(item.uploaded)}">
+                            ${optionsHtml}
+                        </select>
+                    </td>
+                    <td><span class="p-badge ${statusClass}">${statusLabel}</span></td>
+                </tr>
+            `;
+        }).join('');
+
+        if (window.lucide) lucide.createIcons();
     }
 
     // Dataset type change listener
     if (targetSelect) {
-        targetSelect.addEventListener('change', updateValidateButtonState);
+        targetSelect.addEventListener('change', () => {
+            if (fileInput && fileInput.files && fileInput.files.length > 0) {
+                inspectSelectedFile(fileInput.files[0]);
+            }
+            updateValidateButtonState();
+        });
     }
 
     // Drag and drop handlers
@@ -1187,6 +1325,7 @@ function initDataImport() {
         if (files.length > 0) {
             fileInput.files = files;
             updateSelectedFileUI(files[0]);
+            inspectSelectedFile(files[0]);
         }
         updateValidateButtonState();
     });
@@ -1198,6 +1337,7 @@ function initDataImport() {
     fileInput.addEventListener('change', () => {
         if (fileInput.files.length > 0) {
             updateSelectedFileUI(fileInput.files[0]);
+            inspectSelectedFile(fileInput.files[0]);
         } else {
             updateValidateButtonState();
         }
@@ -1208,16 +1348,13 @@ function initDataImport() {
         selectedBadge.innerHTML = `<span style="color: var(--primary-emerald); font-weight: 700; margin-right: 6px;">✓</span> <strong>${escapeHtml(file.name)}</strong> <span style="color: var(--text-dim); margin-left: 6px;">(${(file.size / 1024).toFixed(1)} KB)</span>`;
         if (window.lucide) lucide.createIcons();
         updateValidateButtonState();
+        setWorkflowStep('upload');
     }
 
     // Initial state check
     updateValidateButtonState();
-    if (btnLoadDb) {
-        btnLoadDb.disabled = Object.keys(stagedDatasetsState).length === 0;
-    }
-    if (btnClearStaged) {
-        btnClearStaged.disabled = Object.keys(stagedDatasetsState).length === 0;
-    }
+    if (btnLoadDb) btnLoadDb.disabled = Object.keys(stagedDatasetsState).length === 0;
+    if (btnClearStaged) btnClearStaged.disabled = Object.keys(stagedDatasetsState).length === 0;
 
     // Form Submission: Validate CSV
     uploadForm.addEventListener('submit', async (e) => {
@@ -1229,21 +1366,33 @@ function initDataImport() {
 
         const file = fileInput.files[0];
         const datasetType = targetSelect.value;
+        const importMode = modeSelect ? modeSelect.value : 'upsert';
 
-        if (!datasetType) {
-            alert('Please select a Dataset Type (Users, Vehicles, Rides, Payments, or Ratings).');
-            return;
-        }
+        // Collect custom mapping overrides
+        const customMappings = {};
+        const mappingSelects = document.querySelectorAll('.mapping-col-select');
+        mappingSelects.forEach(sel => {
+            const upl = sel.getAttribute('data-uploaded');
+            const can = sel.value;
+            if (upl && can && can !== '__ignore__') {
+                customMappings[upl] = can;
+            }
+        });
 
+        setWorkflowStep('validate');
         btnValidate.disabled = true;
-        btnValidate.innerHTML = '<div class="loading-spinner"></div> Validating Dataset Schema & PKs...';
+        btnValidate.innerHTML = '<div class="loading-spinner"></div> Validating Schema, Types & PKs...';
         validationOutput.style.display = 'block';
-        validationOutput.innerHTML = '<p class="loading-text">Validating column mappings, primary key uniqueness, and non-empty fields against the selected schema...</p>';
+        validationOutput.innerHTML = '<p class="loading-text">Executing deterministic normalization, timestamp parsing, duplicate PK check, and constraints...</p>';
 
         try {
             const formData = new FormData();
             formData.append('file', file);
             formData.append('dataset_type', datasetType);
+            formData.append('import_mode', importMode);
+            if (Object.keys(customMappings).length > 0) {
+                formData.append('custom_mappings', JSON.stringify(customMappings));
+            }
 
             const res = await fetch('/api/import/validate', {
                 method: 'POST',
@@ -1251,29 +1400,32 @@ function initDataImport() {
             });
 
             const data = await res.json();
+            lastValidationResult = data;
             renderValidationResult(data);
 
             if (data.valid && data.table_name) {
+                setWorkflowStep('stage');
                 stagedDatasetsState[data.table_name] = {
                     filename: data.filename,
                     row_count: data.row_count,
                     columns: data.columns,
                     sample_records: data.sample_records,
+                    import_mode: importMode,
                     staged_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                 };
                 refreshStagedTable();
                 showImportPreview(data.table_name, data.sample_records, data.columns, data.row_count);
             }
         } catch (err) {
-            validationOutput.innerHTML = `<div class="import-error-list"><strong>Network/Server Error:</strong> ${escapeHtml(err.message)}</div>`;
+            validationOutput.innerHTML = `<div class="structured-error-card"><div class="error-card-title">❌ Network Error</div><p>${escapeHtml(err.message)}</p></div>`;
         } finally {
-            btnValidate.innerHTML = '<i data-lucide="check-circle"></i> Validate CSV Dataset';
+            btnValidate.innerHTML = '<i data-lucide="check-circle"></i> Validate & Stage Dataset';
             updateValidateButtonState();
             if (window.lucide) lucide.createIcons();
         }
     });
 
-    // Load staged datasets into PostgreSQL
+    // Load staged datasets into PostgreSQL (Atomic Transaction)
     btnLoadDb.addEventListener('click', async () => {
         const stagedTables = Object.keys(stagedDatasetsState);
         if (stagedTables.length === 0) {
@@ -1281,15 +1433,28 @@ function initDataImport() {
             return;
         }
 
+        const importMode = modeSelect ? modeSelect.value : 'upsert';
+
+        // Replace Mode Confirmation Prompt
+        if (importMode === 'replace') {
+            const confirmed = confirm(
+                `⚠️ Destructive Replace Mode Confirmation:\n\n` +
+                `This operation will CLEAR / TRUNCATE all existing rows in table(s): ${stagedTables.join(', ')} before inserting the staged data.\n\n` +
+                `Are you sure you want to replace these tables?`
+            );
+            if (!confirmed) return;
+        }
+
+        setWorkflowStep('load');
         btnLoadDb.disabled = true;
         btnLoadDb.innerHTML = '<div class="loading-spinner"></div> Executing Atomic Transaction...';
-        loadOutput.innerHTML = '<p class="loading-text">Validating foreign keys and executing PostgreSQL batch insert...</p>';
+        loadOutput.innerHTML = '<p class="loading-text">Validating batch foreign keys and executing PostgreSQL atomic transaction in dependency order...</p>';
 
         try {
             const res = await fetch('/api/import/load', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tables: stagedTables })
+                body: JSON.stringify({ tables: stagedTables, import_mode: importMode })
             });
 
             const result = await res.json();
@@ -1298,17 +1463,18 @@ function initDataImport() {
                 let countSummary = '';
                 if (result.loaded_counts) {
                     countSummary = Object.entries(result.loaded_counts)
-                        .map(([t, c]) => `• <strong>${t}</strong>: ${c} rows`)
+                        .map(([t, c]) => `• <strong>public.${t}</strong>: ${c.toLocaleString()} records`)
                         .join('<br>');
                 }
 
                 loadOutput.innerHTML = `
-                    <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid var(--primary-emerald); padding: 14px; border-radius: 8px; color: #D1D5DB;">
-                        <div style="display: flex; align-items: center; gap: 8px; color: var(--primary-emerald); font-weight: 600; margin-bottom: 6px;">
-                            <i data-lucide="check-circle-2"></i> Database Load Successful!
+                    <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid var(--primary-emerald); padding: 16px; border-radius: 8px; color: #D1D5DB;">
+                        <div style="display: flex; align-items: center; gap: 8px; color: var(--primary-emerald); font-weight: 700; font-size: 1rem; margin-bottom: 6px;">
+                            <i data-lucide="check-circle-2"></i> Atomic Database Load Successful!
                         </div>
-                        <p style="font-size: 0.88rem; margin-bottom: 8px;">All datasets committed atomically in dependency order:</p>
-                        <div style="font-size: 0.84rem; line-height: 1.6;">${countSummary}</div>
+                        <p style="font-size: 0.88rem; margin-bottom: 8px;">All datasets committed atomically in dependency order (${escapeHtml(importMode.toUpperCase())} mode):</p>
+                        <div style="font-size: 0.84rem; line-height: 1.6; margin-bottom: 10px;">${countSummary}</div>
+                        <span class="p-badge safe"><i data-lucide="shield-check"></i> Transaction Committed</span>
                     </div>
                 `;
                 // Reset staged state
@@ -1319,33 +1485,39 @@ function initDataImport() {
                 loadDbSchema();
                 loadDashboardStats();
             } else {
-                let errHtml = '';
-                if (result.error) {
-                    errHtml += `<div style="white-space: pre-wrap; font-family: inherit; font-size: 0.86rem; line-height: 1.5; margin-bottom: 8px;">${escapeHtml(result.error)}</div>`;
+                let structuredHtml = '';
+                if (result.structured_error) {
+                    const se = result.structured_error;
+                    structuredHtml = renderSingleStructuredErrorCard(se);
+                } else if (result.structured_errors && result.structured_errors.length > 0) {
+                    structuredHtml = result.structured_errors.map(renderSingleStructuredErrorCard).join('');
+                } else if (result.error) {
+                    structuredHtml = `<div class="structured-error-card"><div class="error-card-title">❌ Transaction Rolled Back</div><div class="error-explanation-box">${escapeHtml(result.error)}</div></div>`;
                 }
-                if (result.errors && result.errors.length > 0 && result.errors[0] !== result.error) {
-                    errHtml += `<ul style="margin-top: 6px; margin-left: 18px;">${result.errors.map(e => `<li style="white-space: pre-wrap; margin-bottom: 6px;">${escapeHtml(e)}</li>`).join('')}</ul>`;
-                }
-                if (result.technical_error && result.technical_error !== result.error) {
-                    errHtml += `
-                        <details style="margin-top: 10px; font-size: 0.78rem; opacity: 0.85;">
-                            <summary style="cursor: pointer; color: var(--text-muted);">Technical Details (PostgreSQL Log)</summary>
-                            <pre style="margin-top: 4px; padding: 6px 10px; background: rgba(0,0,0,0.3); border-radius: 4px; overflow-x: auto; white-space: pre-wrap; color: #FECACA;">${escapeHtml(result.technical_error)}</pre>
+
+                let techHtml = '';
+                if (result.technical_error) {
+                    techHtml = `
+                        <details class="error-tech-details">
+                            <summary>Technical Details (PostgreSQL Log)</summary>
+                            <pre>${escapeHtml(result.technical_error)}</pre>
                         </details>
                     `;
                 }
+
                 loadOutput.innerHTML = `
-                    <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid var(--accent-red); padding: 14px; border-radius: 8px; color: #FECACA;">
-                        <div style="display: flex; align-items: center; gap: 8px; color: var(--accent-red); font-weight: 600; margin-bottom: 6px;">
+                    <div style="background: rgba(239, 68, 68, 0.12); border: 1px solid var(--accent-red); padding: 16px; border-radius: 8px; color: #FECACA;">
+                        <div style="display: flex; align-items: center; gap: 8px; color: var(--accent-red); font-weight: 700; font-size: 1rem; margin-bottom: 6px;">
                             <i data-lucide="alert-octagon"></i> Transaction Rolled Back
                         </div>
-                        <p style="font-size: 0.86rem; margin-bottom: 8px;">No partial changes were saved. Please resolve the integrity errors and retry:</p>
-                        <div style="font-size: 0.84rem;">${errHtml}</div>
+                        <p style="font-size: 0.86rem; margin-bottom: 12px;"><strong>No partial changes were saved to PostgreSQL.</strong> All changes were rolled back atomically.</p>
+                        ${structuredHtml}
+                        ${techHtml}
                     </div>
                 `;
             }
         } catch (err) {
-            loadOutput.innerHTML = `<div class="import-error-list"><strong>Failed to execute database load:</strong> ${escapeHtml(err.message)}</div>`;
+            loadOutput.innerHTML = `<div class="structured-error-card"><div class="error-card-title">❌ Load Execution Failed</div><p>${escapeHtml(err.message)}</p></div>`;
         } finally {
             const hasStaged = Object.keys(stagedDatasetsState).length > 0;
             btnLoadDb.disabled = !hasStaged;
@@ -1363,52 +1535,169 @@ function initDataImport() {
             refreshStagedTable();
             loadOutput.innerHTML = '';
             validationOutput.style.display = 'none';
+            if (mappingCard) mappingCard.style.display = 'none';
             document.getElementById('import-preview-section').style.display = 'none';
             if (btnLoadDb) btnLoadDb.disabled = true;
             if (btnClearStaged) btnClearStaged.disabled = true;
+            setWorkflowStep('upload');
         } catch (err) {
             console.error('Error clearing staged:', err);
         }
     });
+
+    // Download Normalized CSV button
+    if (btnDownloadNorm) {
+        btnDownloadNorm.addEventListener('click', () => {
+            const stagedTbl = Object.keys(stagedDatasetsState)[0];
+            if (!stagedTbl || !stagedDatasetsState[stagedTbl]) {
+                alert('No staged dataset available to download.');
+                return;
+            }
+            const item = stagedDatasetsState[stagedTbl];
+            const records = item.sample_records || [];
+            if (records.length === 0) {
+                alert('No records available to download.');
+                return;
+            }
+            const headers = Object.keys(records[0]);
+            const csvRows = [headers.join(',')];
+            records.forEach(row => {
+                const values = headers.map(h => {
+                    const val = row[h] !== null && row[h] !== undefined ? String(row[h]) : '';
+                    return `"${val.replace(/"/g, '""')}"`;
+                });
+                csvRows.push(values.join(','));
+            });
+            const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${stagedTbl}_normalized.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+    }
+}
+
+function renderSingleStructuredErrorCard(err) {
+    if (!err) return '';
+    const errType = (err.error_type || 'validation_error').replace(/_/g, ' ').toUpperCase();
+    return `
+        <div class="structured-error-card">
+            <div class="error-card-title">
+                <i data-lucide="alert-circle"></i> ${escapeHtml(errType)}
+            </div>
+            <div class="error-meta-grid">
+                <div class="error-meta-item"><strong>File</strong><span>${escapeHtml(err.file || 'uploaded.csv')}</span></div>
+                <div class="error-meta-item"><strong>Dataset</strong><span>${escapeHtml(err.dataset || 'Unknown')}</span></div>
+                <div class="error-meta-item"><strong>Target Table</strong><span>${escapeHtml(err.target_table || 'public.unknown')}</span></div>
+                ${err.row !== null && err.row !== undefined ? `<div class="error-meta-item"><strong>Row</strong><span>${escapeHtml(String(err.row))}</span></div>` : ''}
+                ${err.column ? `<div class="error-meta-item"><strong>Column</strong><span>${escapeHtml(err.column)}</span></div>` : ''}
+                ${err.value !== null && err.value !== undefined ? `<div class="error-meta-item"><strong>Value</strong><span>${escapeHtml(String(err.value))}</span></div>` : ''}
+            </div>
+            <div class="error-explanation-box">
+                <strong>Problem:</strong> ${escapeHtml(err.problem || err.message || 'Validation failed.')}
+            </div>
+            ${err.expected ? `<div class="error-explanation-box" style="color: #93C5FD;"><strong>Expected:</strong> ${escapeHtml(err.expected)}</div>` : ''}
+            ${err.suggested_action ? `
+                <div class="error-suggested-box">
+                    <strong>Suggested Action:</strong> ${escapeHtml(err.suggested_action)}
+                </div>
+            ` : ''}
+            ${err.technical_details ? `
+                <details class="error-tech-details">
+                    <summary>Technical Stacktrace</summary>
+                    <pre>${escapeHtml(err.technical_details)}</pre>
+                </details>
+            ` : ''}
+        </div>
+    `;
+}
+
+function downloadErrorReport(data) {
+    if (!data) return;
+    const report = {
+        timestamp: new Date().toISOString(),
+        filename: data.filename,
+        dataset_type: data.table_name,
+        validation_state: data.validation_state,
+        errors: data.structured_errors || data.errors,
+        warnings: data.warnings
+    };
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `error_report_${data.filename || 'dataset'}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
 }
 
 function renderValidationResult(data) {
     const validationOutput = document.getElementById('validation-output');
+    if (!validationOutput) return;
     validationOutput.style.display = 'block';
 
     const isValid = data.valid;
-    const errors = data.errors || [];
+    const state = data.validation_state || (isValid ? 'VALID' : 'INVALID');
+    const structuredErrors = data.structured_errors || [];
+    const textErrors = data.errors || [];
     const warnings = data.warnings || [];
+
+    let statusTitle = 'Validation Passed & Staged';
+    let statusClass = 'safe';
+    let statusIcon = 'check-circle-2';
+
+    if (state === 'VALID_WITH_WARNINGS') {
+        statusTitle = 'Validation Passed with Warnings';
+        statusClass = 'safe';
+        statusIcon = 'alert-triangle';
+    } else if (state === 'INVALID') {
+        statusTitle = 'Validation Failed';
+        statusClass = 'p-badge-red';
+        statusIcon = 'alert-octagon';
+    } else if (state === 'UNSUPPORTED_DATASET') {
+        statusTitle = 'Unsupported Dataset Type';
+        statusClass = 'p-badge-red';
+        statusIcon = 'help-circle';
+    }
 
     let checkpointsHtml = `
         <div class="checkpoint-list">
-            <div class="checkpoint-item ${data.filename.endsWith('.csv') ? 'pass' : 'fail'}">
-                <i data-lucide="${data.filename.endsWith('.csv') ? 'check-circle' : 'x-circle'}"></i>
+            <div class="checkpoint-item ${data.filename && data.filename.endsWith('.csv') ? 'pass' : 'fail'}">
+                <i data-lucide="${data.filename && data.filename.endsWith('.csv') ? 'check-circle' : 'x-circle'}"></i>
                 <span>File Format: CSV (.csv) Verified</span>
             </div>
-            <div class="checkpoint-item ${errors.some(e => e.includes('missing required column')) ? 'fail' : 'pass'}">
-                <i data-lucide="${errors.some(e => e.includes('missing required column')) ? 'x-circle' : 'check-circle'}"></i>
-                <span>Required Schema Columns: ${errors.some(e => e.includes('missing required column')) ? 'Missing Columns' : 'All Present'}</span>
+            <div class="checkpoint-item ${textErrors.some(e => e.includes('missing required column')) ? 'fail' : 'pass'}">
+                <i data-lucide="${textErrors.some(e => e.includes('missing required column')) ? 'x-circle' : 'check-circle'}"></i>
+                <span>Required Schema Columns: ${textErrors.some(e => e.includes('missing required column')) ? 'Missing Columns' : 'All Present'}</span>
             </div>
-            <div class="checkpoint-item ${errors.some(e => e.includes('duplicate primary key')) ? 'fail' : 'pass'}">
-                <i data-lucide="${errors.some(e => e.includes('duplicate primary key')) ? 'x-circle' : 'check-circle'}"></i>
-                <span>Primary Key Uniqueness: ${errors.some(e => e.includes('duplicate primary key')) ? 'Duplicate PKs Detected' : '0 Duplicates'}</span>
+            <div class="checkpoint-item ${textErrors.some(e => e.includes('duplicate primary key')) ? 'fail' : 'pass'}">
+                <i data-lucide="${textErrors.some(e => e.includes('duplicate primary key')) ? 'x-circle' : 'check-circle'}"></i>
+                <span>Primary Key Uniqueness: ${textErrors.some(e => e.includes('duplicate primary key')) ? 'Duplicate PKs Detected' : '0 Duplicates'}</span>
             </div>
-            <div class="checkpoint-item ${errors.some(e => e.includes('completely empty')) ? 'fail' : 'pass'}">
-                <i data-lucide="${errors.some(e => e.includes('completely empty')) ? 'x-circle' : 'check-circle'}"></i>
-                <span>Field Completeness: ${errors.some(e => e.includes('completely empty')) ? 'Empty Required Fields' : 'Populated'}</span>
+            <div class="checkpoint-item ${textErrors.some(e => e.includes('Invalid timestamp') || e.includes('NaN')) ? 'fail' : 'pass'}">
+                <i data-lucide="${textErrors.some(e => e.includes('Invalid timestamp') || e.includes('NaN')) ? 'x-circle' : 'check-circle'}"></i>
+                <span>Timestamp & Data Types: ${textErrors.some(e => e.includes('Invalid timestamp') || e.includes('NaN')) ? 'Type Errors Detected' : 'Strict Types Verified'}</span>
             </div>
         </div>
     `;
 
     let errorsHtml = '';
-    if (errors.length > 0) {
+    if (structuredErrors.length > 0) {
         errorsHtml = `
-            <div class="import-error-list" style="white-space: pre-wrap;">
+            <div style="margin-top: 14px;">
+                <div style="font-weight: 700; color: var(--accent-red); margin-bottom: 8px; font-size: 0.9rem;">
+                    Diagnostic Errors (${structuredErrors.length}):
+                </div>
+                ${structuredErrors.map(renderSingleStructuredErrorCard).join('')}
+            </div>
+        `;
+    } else if (textErrors.length > 0) {
+        errorsHtml = `
+            <div class="import-error-list" style="margin-top: 12px;">
                 <strong>Validation Errors Detected:</strong>
-                <ul style="margin-top: 6px; margin-left: 18px;">
-                    ${errors.map(err => `<li style="margin-bottom: 8px; white-space: pre-wrap;">${escapeHtml(err)}</li>`).join('')}
-                </ul>
+                <ul>${textErrors.map(err => `<li>${escapeHtml(err)}</li>`).join('')}</ul>
             </div>
         `;
     }
@@ -1416,8 +1705,8 @@ function renderValidationResult(data) {
     let warningsHtml = '';
     if (warnings.length > 0) {
         warningsHtml = `
-            <div style="margin-top: 10px; padding: 8px 12px; background: rgba(245, 158, 11, 0.12); border-left: 3px solid var(--accent-amber); border-radius: 4px; color: #FCD34D; font-size: 0.82rem;">
-                <strong>Warnings:</strong>
+            <div style="margin-top: 10px; padding: 10px 14px; background: rgba(245, 158, 11, 0.12); border-left: 3px solid var(--accent-amber); border-radius: 4px; color: #FCD34D; font-size: 0.84rem;">
+                <strong>Warnings / Notices:</strong>
                 <ul style="margin-left: 18px; margin-top: 4px;">
                     ${warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}
                 </ul>
@@ -1425,20 +1714,32 @@ function renderValidationResult(data) {
         `;
     }
 
+    let actionsHtml = '';
+    if (!isValid) {
+        actionsHtml = `
+            <div class="report-actions">
+                <button class="btn-refresh" onclick='downloadErrorReport(lastValidationResult)' style="font-size: 0.8rem;">
+                    <i data-lucide="download"></i> Download Diagnostic Error Report (JSON)
+                </button>
+            </div>
+        `;
+    }
+
     validationOutput.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <div style="font-size: 0.92rem; font-weight: 600; color: ${isValid ? 'var(--primary-emerald)' : 'var(--accent-red)'}; display: flex; align-items: center; gap: 6px;">
-                <i data-lucide="${isValid ? 'check-circle-2' : 'alert-octagon'}"></i>
-                <span>${isValid ? 'Validation Passed & Staged' : 'Validation Failed'}</span>
+            <div style="font-size: 0.95rem; font-weight: 700; color: ${isValid ? 'var(--primary-emerald)' : 'var(--accent-red)'}; display: flex; align-items: center; gap: 6px;">
+                <i data-lucide="${statusIcon}"></i>
+                <span>${statusTitle}</span>
             </div>
-            <span class="p-badge ${isValid ? 'safe' : 'p-badge-red'}">${escapeHtml(data.label || data.table_name || 'Dataset')}</span>
+            <span class="p-badge ${statusClass}">${escapeHtml(data.label || data.table_name || 'Dataset')}</span>
         </div>
         <div style="font-size: 0.84rem; color: var(--text-muted); margin-bottom: 8px;">
-            Target Table: <strong>public.${escapeHtml(data.table_name || 'unknown')}</strong> | Rows: <strong>${data.row_count || 0}</strong> | Columns: <strong>${(data.columns || []).length}</strong>
+            Target Table: <strong>public.${escapeHtml(data.table_name || 'unknown')}</strong> | Total Rows: <strong>${(data.row_count || 0).toLocaleString()}</strong> | Mapped Columns: <strong>${(data.columns || []).length}</strong>
         </div>
         ${checkpointsHtml}
         ${errorsHtml}
         ${warningsHtml}
+        ${actionsHtml}
     `;
 
     if (window.lucide) lucide.createIcons();
@@ -1474,7 +1775,7 @@ function refreshStagedTable() {
             <tr>
                 <td><strong>public.${escapeHtml(tbl)}</strong><br><span style="font-size: 0.76rem; color: var(--text-dim);">${escapeHtml(item.filename)}</span></td>
                 <td>${item.row_count.toLocaleString()}</td>
-                <td><span class="p-badge safe">Ready</span></td>
+                <td><span class="p-badge safe">Ready to Load</span></td>
                 <td>
                     <button class="btn-refresh" style="padding: 4px 8px; font-size: 0.78rem;" onclick="previewStagedTable('${escapeHtml(tbl)}')">
                         <i data-lucide="eye"></i> Preview
@@ -1501,7 +1802,7 @@ function showImportPreview(tableName, records, columns, totalRows) {
     if (!previewSection || !tableWrapper) return;
 
     previewSection.style.display = 'block';
-    previewTitle.innerHTML = `<i data-lucide="table"></i> Staged Dataset Preview: public.${escapeHtml(tableName)} (${totalRows} total rows)`;
+    previewTitle.innerHTML = `<i data-lucide="table"></i> Staged Normalized Preview: public.${escapeHtml(tableName)} (${totalRows.toLocaleString()} total rows)`;
 
     if (!records || records.length === 0) {
         tableWrapper.innerHTML = `<p class="placeholder-text">No sample records available for preview.</p>`;

@@ -1,0 +1,4 @@
+user_id,first_name,last_name,email,phone,city,province,user_type,signup_date,is_active
+90001,John,Doe,johndoe90001@example.com,+15551234567,Toronto,ON,rider,2025-01-15,True
+90002,Jane,Smith,janesmith90002@example.com,+15557654321,Vancouver,BC,driver,2025-02-20,True
+90003,Alex,Taylor,alextaylor90003@example.com,+15559876543,Montreal,QC,rider,2025-03-10,False

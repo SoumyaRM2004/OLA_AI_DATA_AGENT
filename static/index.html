@@ -420,13 +420,30 @@
                         <div class="import-header-icon"><i data-lucide="file-spreadsheet"></i></div>
                         <div class="import-header-info">
                             <h3>Mobility CSV Dataset Importer</h3>
-                            <p>Upload a CSV matching one of the supported OLA mobility datasets: <strong>Users, Vehicles, Rides, Payments, Ratings</strong>. The selected Dataset Type determines the validation schema before transactional database loading.</p>
+                            <p>Upload CSV datasets for <strong>Users, Vehicles, Rides, Payments, Ratings</strong>. Features deterministic normalization, auto-schema detection, column alias mapping, duplicate PK & FK integrity checks, and atomic PostgreSQL transactions.</p>
                         </div>
                         <div class="import-badges">
+                            <span class="schema-badge"><i data-lucide="sparkles"></i> Auto-Detect</span>
+                            <span class="schema-badge"><i data-lucide="git-merge"></i> Column Mapping</span>
                             <span class="schema-badge"><i data-lucide="shield-check"></i> Duplicate PK Guard</span>
                             <span class="schema-badge"><i data-lucide="link"></i> Foreign Key Check</span>
                             <span class="schema-badge"><i data-lucide="database"></i> Atomic Transaction</span>
                         </div>
+                    </div>
+
+                    <!-- Workflow Stage Tracker -->
+                    <div class="import-workflow-bar" id="import-workflow-bar">
+                        <div class="workflow-step active" id="step-upload"><span class="step-dot">1</span> Upload CSV</div>
+                        <div class="workflow-arrow"><i data-lucide="chevron-right"></i></div>
+                        <div class="workflow-step" id="step-detect"><span class="step-dot">2</span> Auto Detect</div>
+                        <div class="workflow-arrow"><i data-lucide="chevron-right"></i></div>
+                        <div class="workflow-step" id="step-map"><span class="step-dot">3</span> Column Mapping</div>
+                        <div class="workflow-arrow"><i data-lucide="chevron-right"></i></div>
+                        <div class="workflow-step" id="step-validate"><span class="step-dot">4</span> Validate & Normalize</div>
+                        <div class="workflow-arrow"><i data-lucide="chevron-right"></i></div>
+                        <div class="workflow-step" id="step-stage"><span class="step-dot">5</span> Staged Preview</div>
+                        <div class="workflow-arrow"><i data-lucide="chevron-right"></i></div>
+                        <div class="workflow-step" id="step-load"><span class="step-dot">6</span> Atomic DB Load</div>
                     </div>
 
                     <div class="import-grid">
@@ -435,22 +452,32 @@
                             <div class="etl-card-header">
                                 <div class="etl-icon emerald"><i data-lucide="upload-cloud"></i></div>
                                 <div>
-                                    <h3>Upload & Validate CSV</h3>
-                                    <p>Select the dataset type and choose any CSV file to validate against the schema.</p>
+                                    <h3>Upload & Inspect CSV</h3>
+                                    <p>Select dataset type (or Auto Detect) and choose any mobility CSV file.</p>
                                 </div>
                             </div>
 
                             <form id="import-upload-form" class="etl-form">
-                                <div class="form-group">
-                                    <label>Dataset Type <span style="color: var(--accent-red);">*</span></label>
-                                    <select id="import-target-table" required>
-                                        <option value="" disabled selected>-- Select Dataset Type --</option>
-                                        <option value="users">Users</option>
-                                        <option value="vehicles">Vehicles</option>
-                                        <option value="rides">Rides</option>
-                                        <option value="payments">Payments</option>
-                                        <option value="ratings">Ratings</option>
-                                    </select>
+                                <div class="form-row">
+                                    <div class="form-group" style="flex: 1;">
+                                        <label>Dataset Type</label>
+                                        <select id="import-target-table">
+                                            <option value="auto" selected>✨ Auto Detect (from CSV headers)</option>
+                                            <option value="users">Users</option>
+                                            <option value="vehicles">Vehicles</option>
+                                            <option value="rides">Rides</option>
+                                            <option value="payments">Payments</option>
+                                            <option value="ratings">Ratings</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group" style="flex: 1;">
+                                        <label>Import Mode</label>
+                                        <select id="import-mode-select">
+                                            <option value="upsert" selected>Upsert (Update existing PKs, insert new)</option>
+                                            <option value="append">Append (Insert new records only)</option>
+                                            <option value="replace">Replace (Clear table & reload with confirmation)</option>
+                                        </select>
+                                    </div>
                                 </div>
 
                                 <div class="form-group">
@@ -463,8 +490,31 @@
                                     <div id="selected-file-name" class="selected-file-badge" style="display: none;"></div>
                                 </div>
 
+                                <!-- Column Mapping Card (Dynamic) -->
+                                <div id="column-mapping-card" class="column-mapping-box" style="display: none;">
+                                    <div class="mapping-header">
+                                        <h4><i data-lucide="git-merge"></i> Column Mapping & Alias Review</h4>
+                                        <span class="confidence-badge" id="detection-confidence-badge">High Confidence</span>
+                                    </div>
+                                    <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 10px;">
+                                        Review proposed column mappings from your uploaded CSV to the canonical schema.
+                                    </p>
+                                    <div class="table-responsive">
+                                        <table class="data-table mapping-table" id="column-mapping-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Uploaded Header</th>
+                                                    <th>Mapped Schema Column</th>
+                                                    <th>Status / Confidence</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="column-mapping-tbody"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
                                 <button type="submit" class="btn-primary" id="btn-validate-csv" disabled>
-                                    <i data-lucide="check-circle"></i> Validate CSV Dataset
+                                    <i data-lucide="check-circle"></i> Validate & Stage Dataset
                                 </button>
                             </form>
 
@@ -521,6 +571,9 @@
                     <div class="files-preview-section" id="import-preview-section" style="display: none; margin-top: 20px;">
                         <div class="table-card-header">
                             <h3 id="import-preview-title"><i data-lucide="table"></i> Staged Dataset Preview</h3>
+                            <button class="btn-refresh" id="btn-download-canonical-csv" style="font-size: 0.8rem;">
+                                <i data-lucide="download"></i> Download Normalized CSV
+                            </button>
                         </div>
                         <div id="import-preview-table-wrapper" class="table-responsive" style="margin-top: 15px;"></div>
                     </div>

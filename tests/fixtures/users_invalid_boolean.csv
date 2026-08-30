@@ -1,0 +1,2 @@
+user_id,first_name,last_name,email,phone,city,province,user_type,signup_date,is_active
+90099,Invalid,Bool,invalidbool90099@example.com,+15550009999,Toronto,ON,rider,2025-01-01,maybe_active

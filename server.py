@@ -14,7 +14,7 @@ load_dotenv()
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from utils.database import DatabaseConnection
-from utils.etl_tools import ETLTools
+from utils.etl_tools import ETLTools, CITY_COORDINATES, normalize_date_str
 from utils.data_importer import (
     validate_csv_content,
     validate_batch_foreign_keys,
@@ -188,13 +188,53 @@ async def trigger_extract(request: ExtractRequest):
             format=request.output_format
         )
     else:
-        msg = etl.extract_load(
-            url=request.url or "https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code",
-            output_folder=request.output_folder,
-            format=request.output_format,
-            city_name=request.city_name
-        )
+        # Check if a specific city was selected from the 8 configured cities
+        selected_city = request.city_name if request.city_name and request.city_name in CITY_COORDINATES else None
+        if selected_city:
+            coords = CITY_COORDINATES[selected_city]
+            valid_start, norm_start = normalize_date_str(request.start_date, "2025-01-01")
+            valid_end, norm_end = normalize_date_str(request.end_date, "2025-01-31")
+            if not valid_start:
+                msg = f"Date Validation Error: {norm_start}"
+            elif not valid_end:
+                msg = f"Date Validation Error: {norm_end}"
+            elif norm_start > norm_end:
+                msg = f"Date Validation Error: Start date ({norm_start}) cannot be after end date ({norm_end})."
+            else:
+                city_url = (
+                    f"https://archive-api.open-meteo.com/v1/archive?"
+                    f"latitude={coords['latitude']}&longitude={coords['longitude']}&"
+                    f"start_date={norm_start}&end_date={norm_end}&"
+                    f"hourly=temperature_2m,precipitation,rain,weather_code"
+                )
+                msg = etl.extract_load(
+                    url=city_url,
+                    output_folder=request.output_folder,
+                    format=request.output_format,
+                    city_name=selected_city
+                )
+        else:
+            msg = etl.extract_load(
+                url=request.url or "https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&hourly=temperature_2m,precipitation,rain,weather_code",
+                output_folder=request.output_folder,
+                format=request.output_format,
+                city_name=request.city_name
+            )
     
+    # Check if extraction resulted in error
+    is_error = any(msg.startswith(prefix) for prefix in [
+        "Error", "API request failed", "API returned an empty", "API returned an unexpected",
+        "API Network Error", "API connection error", "API request timed out", "API request error",
+        "Date Validation Error", "Filesystem Security Error", "Security Validation Error",
+        "URL Security Error", "Coordinate Error"
+    ])
+    
+    if is_error:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": msg, "message": msg}
+        )
+
     # Check if file was created safely
     try:
         folder_path = etl._resolve_safe_data_path(request.output_folder)
@@ -208,7 +248,7 @@ async def trigger_extract(request: ExtractRequest):
     if expected_path and os.path.exists(expected_path):
         preview = etl.preview_file(expected_path, max_rows=5)
 
-    return JSONResponse(content={"message": msg, "preview": preview, "file_path": expected_path})
+    return JSONResponse(content={"success": True, "message": msg, "preview": preview, "file_path": expected_path})
 
 
 @app.post("/api/etl/transform")
@@ -260,44 +300,142 @@ async def preview_file(path: str):
     return JSONResponse(content=res)
 
 
-# ------------------- DATA IMPORT ENDPOINTS -------------------
+import io
+import json
+import math
+from datetime import datetime, date
+from decimal import Decimal
+import pandas as pd
+import numpy as np
+
+def serialize_dict_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    clean_records = []
+    for r in records:
+        clean_r = {}
+        for k, v in r.items():
+            if v is None:
+                clean_r[k] = ""
+            elif isinstance(v, (datetime, date, pd.Timestamp)):
+                clean_r[k] = str(v)
+            elif isinstance(v, (Decimal, float, np.floating)):
+                clean_r[k] = float(v) if not (math.isnan(v) or math.isinf(v)) else ""
+            elif isinstance(v, (int, np.integer)):
+                clean_r[k] = int(v)
+            elif isinstance(v, (bool, np.bool_)):
+                clean_r[k] = bool(v)
+            else:
+                clean_r[k] = str(v)
+        clean_records.append(clean_r)
+    return clean_records
 
 class LoadImportRequest(BaseModel):
     tables: Optional[List[str]] = None
+    import_mode: Optional[str] = "upsert"
 
 @app.get("/api/import/schema-info")
 async def get_import_schema_info():
-    """Returns metadata about expected columns and foreign keys for the 5 mobility datasets."""
-    return JSONResponse(content={"schemas": TABLE_SCHEMAS})
+    """Returns metadata about expected columns, data types, aliases, and foreign keys for the 5 mobility datasets."""
+    from utils.data_importer import COLUMN_ALIASES
+    return JSONResponse(content={
+        "schemas": TABLE_SCHEMAS,
+        "aliases": COLUMN_ALIASES
+    })
+
+
+@app.post("/api/import/inspect")
+async def inspect_import_file(
+    file: UploadFile = File(...),
+    dataset_type: Optional[str] = Form(None)
+):
+    """
+    Fast inspection of uploaded CSV headers to auto-detect dataset type and propose column mappings.
+    """
+    from utils.data_importer import detect_dataset_from_headers, map_columns_to_schema
+    file_bytes = await file.read()
+    
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        return JSONResponse(status_code=400, content={"error": f"'{file.filename}' is not a valid CSV file."})
+    
+    try:
+        raw_df = pd.read_csv(io.BytesIO(file_bytes), nrows=10, dtype=object)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": f"Failed to parse CSV: {str(e)}"})
+
+    uploaded_cols = list(raw_df.columns)
+    
+    # Auto-detection
+    target = dataset_type.lower().strip() if dataset_type and dataset_type.strip() not in ("", "auto", "auto_detect") else None
+    detection = detect_dataset_from_headers(uploaded_cols)
+    detected_table = target or detection.get("detected_dataset")
+    
+    mapping_info = {}
+    if detected_table and detected_table in TABLE_SCHEMAS:
+        mapping_info = map_columns_to_schema(uploaded_cols, detected_table)
+
+    sample_preview = serialize_dict_records(raw_df.head(3).to_dict(orient="records"))
+
+    return JSONResponse(content={
+        "filename": file.filename,
+        "uploaded_columns": uploaded_cols,
+        "detected_dataset": detected_table,
+        "label": TABLE_SCHEMAS.get(detected_table, {}).get("label", "Unknown") if detected_table else "Unknown",
+        "confidence": detection.get("confidence", "Low"),
+        "confidence_score": detection.get("confidence_score", 0.0),
+        "proposed_mappings": mapping_info.get("mapped_columns", {}),
+        "mapping_details": mapping_info.get("mapping_details", []),
+        "extra_columns": mapping_info.get("extra_columns", []),
+        "missing_required": mapping_info.get("missing_required", []),
+        "all_scores": detection.get("all_scores", {}),
+        "sample_preview": sample_preview
+    })
 
 
 @app.post("/api/import/validate")
 async def validate_import_file(
     file: UploadFile = File(...),
-    dataset_type: str = Form(...)
+    dataset_type: str = Form(...),
+    custom_mappings: Optional[str] = Form(None),
+    import_mode: Optional[str] = Form("upsert")
 ):
     """
-    Validates an uploaded CSV file strictly against the selected OLA mobility schema.
-    Checks columns, duplicate primary keys, null values, and returns preview records.
+    Validates an uploaded CSV file strictly against the selected/detected OLA mobility schema.
+    Applies column mappings, normalizes raw values (NaN, NULL, timestamps), checks PKs and FKs,
+    and stages the canonical dataset if valid.
     """
     file_bytes = await file.read()
-    is_valid, df, table_name, errors, warnings = validate_csv_content(
+    
+    parsed_custom_mappings = None
+    if custom_mappings and custom_mappings.strip():
+        try:
+            parsed_custom_mappings = json.loads(custom_mappings)
+        except Exception:
+            parsed_custom_mappings = None
+
+    is_valid, df, table_name, structured_errors, warnings, metadata = validate_csv_content(
         file_bytes=file_bytes,
         filename=file.filename,
-        dataset_type=dataset_type
+        dataset_type=dataset_type,
+        custom_mappings=parsed_custom_mappings,
+        import_mode=import_mode or "upsert"
     )
 
     sample_records = []
     columns = []
     row_count = 0
 
-    if df is not None:
+    # Format text error strings for display compatibility
+    text_errors = [
+        err["problem"] if isinstance(err, dict) and "problem" in err else str(err)
+        for err in structured_errors
+    ]
+
+    if df is not None and not df.empty:
         row_count = len(df)
         columns = list(df.columns)
-        # Top 5 records for UI table preview
-        sample_records = df.head(5).fillna("").to_dict(orient="records")
+        # Top 10 records for UI table preview with safe serialization
+        sample_records = serialize_dict_records(df.head(10).to_dict(orient="records"))
 
-        # Save to temporary staging directory if valid
+        # Save normalized data to temporary staging directory if valid
         if is_valid and table_name:
             upload_dir = os.path.join(os.path.dirname(__file__), "data", "uploads")
             os.makedirs(upload_dir, exist_ok=True)
@@ -306,21 +444,25 @@ async def validate_import_file(
 
     return JSONResponse(content={
         "valid": is_valid,
+        "validation_state": metadata.get("validation_state", "VALID" if is_valid else "INVALID"),
         "filename": file.filename,
         "table_name": table_name,
         "label": TABLE_SCHEMAS.get(table_name, {}).get("label", table_name) if table_name else "Unknown",
         "row_count": row_count,
         "columns": columns,
         "sample_records": sample_records,
-        "errors": errors,
-        "warnings": warnings
+        "structured_errors": structured_errors,
+        "errors": text_errors,
+        "warnings": warnings,
+        "metadata": metadata
     })
 
 
 @app.post("/api/import/load")
 async def load_staged_imports(request: LoadImportRequest):
     """
-    Loads validated and staged CSV datasets into PostgreSQL inside a single transaction.
+    Loads validated and staged CSV datasets into PostgreSQL inside a single atomic transaction.
+    If any table fails, the transaction is rolled back immediately.
     """
     upload_dir = os.path.join(os.path.dirname(__file__), "data", "uploads")
     if not os.path.exists(upload_dir):
@@ -343,21 +485,26 @@ async def load_staged_imports(request: LoadImportRequest):
     if not datasets:
         raise HTTPException(status_code=400, detail="No valid staged datasets selected for database loading.")
 
-    # 1. Validate foreign keys across batch
+    # 1. Validate foreign keys across batch & live PostgreSQL
     fk_valid, fk_errors, fk_warnings = validate_batch_foreign_keys(datasets)
     if not fk_valid:
+        text_fk_errors = [
+            err["problem"] if isinstance(err, dict) and "problem" in err else str(err)
+            for err in fk_errors
+        ]
         return JSONResponse(
             status_code=400,
             content={
                 "success": False,
                 "error": "Foreign key integrity check failed.",
-                "errors": fk_errors,
+                "structured_errors": fk_errors,
+                "errors": text_fk_errors,
                 "warnings": fk_warnings
             }
         )
 
     # 2. Transactional Load into PostgreSQL
-    result = load_datasets_transactional(datasets)
+    result = load_datasets_transactional(datasets, import_mode=request.import_mode or "upsert")
     
     # 3. Clean up staged files on success
     if result.get("success"):
@@ -384,6 +531,7 @@ async def clear_staged_imports():
                 except Exception:
                     pass
     return JSONResponse(content={"message": "Staged imports cleared successfully."})
+
 
 
 # ------------------- STATIC FILES MOUNTING -------------------

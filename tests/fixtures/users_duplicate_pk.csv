@@ -1,0 +1,3 @@
+user_id,first_name,last_name,email,phone,city,province,user_type,signup_date,is_active
+90040,First,User,dup1@example.com,+15551112222,Toronto,ON,rider,2025-01-01,True
+90040,Duplicate,User,dup2@example.com,+15551113333,Toronto,ON,rider,2025-01-02,True
