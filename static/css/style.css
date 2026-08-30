@@ -1453,6 +1453,12 @@ body {
     border: 1px solid rgba(245, 158, 11, 0.2);
 }
 
+.checkpoint-item.not-evaluated {
+    background: rgba(148, 163, 184, 0.08);
+    color: #94A3B8;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
 .checkpoint-item i {
     width: 15px;
     height: 15px;

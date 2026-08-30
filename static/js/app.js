@@ -1268,8 +1268,17 @@ function initDataImport() {
 
         mappingTbody.innerHTML = details.map((item, idx) => {
             const isMapped = item.canonical !== null && item.canonical !== undefined;
-            const statusClass = item.status === 'exact' ? 'safe' : (item.status === 'alias' ? 'safe' : 'p-badge-red');
-            const statusLabel = item.status === 'exact' ? 'Exact Match' : (item.status === 'alias' ? 'Alias Matched' : 'Extra Column');
+            let typeBadge = '<span class="p-badge p-badge-amber">Extra Column</span>';
+            if (item.status === 'exact') {
+                typeBadge = '<span class="p-badge safe">Exact Match</span>';
+            } else if (item.status === 'alias') {
+                typeBadge = '<span class="p-badge safe">Alias</span>';
+            } else if (item.status === 'custom') {
+                typeBadge = '<span class="p-badge safe">Custom</span>';
+            }
+
+            const confLabel = item.confidence ? `${item.confidence}%` : '--';
+            const reasonLabel = escapeHtml(item.reason || (item.status === 'exact' ? 'Exact normalized header match' : (item.status === 'alias' ? 'Known configured alias' : 'No safe mapping found (Extra column)')));
 
             const optionsHtml = `
                 <option value="__ignore__" ${!isMapped ? 'selected' : ''}>-- Ignore / Extra Column --</option>
@@ -1286,7 +1295,9 @@ function initDataImport() {
                             ${optionsHtml}
                         </select>
                     </td>
-                    <td><span class="p-badge ${statusClass}">${statusLabel}</span></td>
+                    <td>${typeBadge}</td>
+                    <td><strong>${confLabel}</strong></td>
+                    <td style="font-size: 0.8rem; color: var(--text-muted);">${reasonLabel}</td>
                 </tr>
             `;
         }).join('');
@@ -1662,26 +1673,56 @@ function renderValidationResult(data) {
         statusIcon = 'help-circle';
     }
 
-    let checkpointsHtml = `
-        <div class="checkpoint-list">
-            <div class="checkpoint-item ${data.filename && data.filename.endsWith('.csv') ? 'pass' : 'fail'}">
-                <i data-lucide="${data.filename && data.filename.endsWith('.csv') ? 'check-circle' : 'x-circle'}"></i>
-                <span>File Format: CSV (.csv) Verified</span>
+    const isParseFailed = !isValid && (data.row_count === 0 || !data.columns || data.columns.length === 0 || state === 'CSV_PARSE_FAILED' || state === 'EMPTY_CSV');
+
+    let checkpointsHtml = '';
+    if (isParseFailed) {
+        checkpointsHtml = `
+            <div class="checkpoint-list">
+                <div class="checkpoint-item fail">
+                    <i data-lucide="x-circle"></i>
+                    <span>File Format: CSV Parse Failed / Empty File</span>
+                </div>
+                <div class="checkpoint-item not-evaluated">
+                    <i data-lucide="minus-circle"></i>
+                    <span>Required Schema Columns: Not evaluated</span>
+                </div>
+                <div class="checkpoint-item not-evaluated">
+                    <i data-lucide="minus-circle"></i>
+                    <span>Primary Key Uniqueness: Not evaluated</span>
+                </div>
+                <div class="checkpoint-item not-evaluated">
+                    <i data-lucide="minus-circle"></i>
+                    <span>Timestamp & Data Types: Not evaluated</span>
+                </div>
             </div>
-            <div class="checkpoint-item ${textErrors.some(e => e.includes('missing required column')) ? 'fail' : 'pass'}">
-                <i data-lucide="${textErrors.some(e => e.includes('missing required column')) ? 'x-circle' : 'check-circle'}"></i>
-                <span>Required Schema Columns: ${textErrors.some(e => e.includes('missing required column')) ? 'Missing Columns' : 'All Present'}</span>
+        `;
+    } else {
+        const hasMissingReq = textErrors.some(e => e.toLowerCase().includes('missing required column')) || structuredErrors.some(e => e.error_type === 'missing_column');
+        const hasPkDup = textErrors.some(e => e.toLowerCase().includes('duplicate primary key')) || structuredErrors.some(e => e.error_type === 'duplicate_primary_key' || e.error_type === 'existing_primary_key');
+        const hasTypeErr = textErrors.some(e => e.toLowerCase().includes('invalid timestamp') || e.toLowerCase().includes('nan') || e.toLowerCase().includes('type mismatch')) || structuredErrors.some(e => e.error_type === 'invalid_type' || e.error_type === 'timestamp_parse_error');
+
+        checkpointsHtml = `
+            <div class="checkpoint-list">
+                <div class="checkpoint-item ${data.filename && data.filename.endsWith('.csv') ? 'pass' : 'fail'}">
+                    <i data-lucide="${data.filename && data.filename.endsWith('.csv') ? 'check-circle' : 'x-circle'}"></i>
+                    <span>File Format: CSV (.csv) Verified</span>
+                </div>
+                <div class="checkpoint-item ${hasMissingReq ? 'fail' : 'pass'}">
+                    <i data-lucide="${hasMissingReq ? 'x-circle' : 'check-circle'}"></i>
+                    <span>Required Schema Columns: ${hasMissingReq ? 'Missing Columns' : 'All Present'}</span>
+                </div>
+                <div class="checkpoint-item ${hasPkDup ? 'fail' : 'pass'}">
+                    <i data-lucide="${hasPkDup ? 'x-circle' : 'check-circle'}"></i>
+                    <span>Primary Key Uniqueness: ${hasPkDup ? 'Duplicate PKs Detected' : '0 Duplicates'}</span>
+                </div>
+                <div class="checkpoint-item ${hasTypeErr ? 'fail' : 'pass'}">
+                    <i data-lucide="${hasTypeErr ? 'x-circle' : 'check-circle'}"></i>
+                    <span>Timestamp & Data Types: ${hasTypeErr ? 'Type Errors Detected' : 'Strict Types Verified'}</span>
+                </div>
             </div>
-            <div class="checkpoint-item ${textErrors.some(e => e.includes('duplicate primary key')) ? 'fail' : 'pass'}">
-                <i data-lucide="${textErrors.some(e => e.includes('duplicate primary key')) ? 'x-circle' : 'check-circle'}"></i>
-                <span>Primary Key Uniqueness: ${textErrors.some(e => e.includes('duplicate primary key')) ? 'Duplicate PKs Detected' : '0 Duplicates'}</span>
-            </div>
-            <div class="checkpoint-item ${textErrors.some(e => e.includes('Invalid timestamp') || e.includes('NaN')) ? 'fail' : 'pass'}">
-                <i data-lucide="${textErrors.some(e => e.includes('Invalid timestamp') || e.includes('NaN')) ? 'x-circle' : 'check-circle'}"></i>
-                <span>Timestamp & Data Types: ${textErrors.some(e => e.includes('Invalid timestamp') || e.includes('NaN')) ? 'Type Errors Detected' : 'Strict Types Verified'}</span>
-            </div>
-        </div>
-    `;
+        `;
+    }
 
     let errorsHtml = '';
     if (structuredErrors.length > 0) {

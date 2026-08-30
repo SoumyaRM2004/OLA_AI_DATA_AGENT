@@ -268,6 +268,72 @@ class TestMobilityDataImporter(unittest.TestCase):
                 found = cur.fetchall()
                 self.assertEqual(len(found), 0, f"Rollback failed, found partial users: {found}")
 
+    # 18. Scenario F: Users missing last_name -> FAIL
+    def test_18_users_missing_last_name_fails(self):
+        csv_text = "user_id,first_name,email,user_type\n901,John,john@example.com,rider\n"
+        valid, df, tbl, errors, warns, meta = validate_csv_content(csv_text.encode("utf-8"), "users_no_last.csv", "users")
+        self.assertFalse(valid)
+        self.assertTrue(any("last_name" in str(e) for e in errors))
+
+    # 19. Scenario G: Users missing user_type -> FAIL
+    def test_19_users_missing_user_type_fails(self):
+        csv_text = "user_id,first_name,last_name,email\n902,John,Doe,john@example.com\n"
+        valid, df, tbl, errors, warns, meta = validate_csv_content(csv_text.encode("utf-8"), "users_no_type.csv", "users")
+        self.assertFalse(valid)
+        self.assertTrue(any("user_type" in str(e) for e in errors))
+
+    # 20. Scenario H: Users with extra age column -> PASS with warning and ignore
+    def test_20_users_with_extra_age_column_passes(self):
+        csv_text = "user_id,first_name,last_name,email,user_type,age\n903,John,Doe,john903@example.com,rider,30\n"
+        valid, df, tbl, errors, warns, meta = validate_csv_content(csv_text.encode("utf-8"), "users_with_age.csv", "users")
+        self.assertTrue(valid)
+        self.assertNotIn("age", df.columns)
+        self.assertTrue(any("age" in w for w in warns))
+
+    # 21. Scenario I: Exact user_id mapping -> 100% confidence
+    def test_21_exact_user_id_mapping_confidence(self):
+        from utils.data_importer import map_columns_to_schema
+        res = map_columns_to_schema(["User ID", "First_Name", "last-name", "Email", "user_type"], "users")
+        self.assertTrue(res["valid"])
+        for item in res["mapping_details"]:
+            self.assertEqual(item["confidence"], 100)
+            self.assertEqual(item["status"], "exact")
+
+    # 22. Scenario J: Known alias mapping -> deterministic 95% confidence
+    def test_22_known_alias_mapping_confidence(self):
+        from utils.data_importer import map_columns_to_schema
+        res = map_columns_to_schema(["customer_id", "fname", "lname", "email_address", "role"], "users")
+        self.assertTrue(res["valid"])
+        for item in res["mapping_details"]:
+            self.assertEqual(item["confidence"], 95)
+            self.assertEqual(item["status"], "alias")
+
+    # 23. Scenario O: Empty CSV -> FAIL cleanly
+    def test_23_empty_csv_clean_failure(self):
+        valid, df, tbl, errors, warns, meta = validate_csv_content(b"", "empty.csv", "users")
+        self.assertFalse(valid)
+        self.assertEqual(meta["validation_state"], "EMPTY_CSV")
+        self.assertIn("empty", errors[0]["problem"].lower())
+
+    # 24. Scenario P: Malformed CSV -> FAIL cleanly
+    def test_24_malformed_csv_clean_failure(self):
+        corrupt_bytes = b"\x00\xff\xfe\x00\x12\x34\x56"
+        valid, df, tbl, errors, warns, meta = validate_csv_content(corrupt_bytes, "corrupt.csv", "users")
+        self.assertFalse(valid)
+        self.assertIn(meta["validation_state"], ["CSV_PARSE_FAILED", "INVALID"])
+
+    # 25. Authoritative CANONICAL_SAMPLES generation test
+    def test_25_all_canonical_samples_valid(self):
+        from utils.data_importer import CANONICAL_SAMPLES, validate_batch_foreign_keys
+        sample_dfs = {}
+        for tbl, csv_content in CANONICAL_SAMPLES.items():
+            valid, df, name, errors, warns, meta = validate_csv_content(csv_content.encode("utf-8"), f"{tbl}_sample.csv", tbl, import_mode="upsert")
+            self.assertTrue(valid, f"Canonical sample {tbl} failed validation: {errors}")
+            sample_dfs[tbl] = df
+        
+        fk_valid, fk_errors, _ = validate_batch_foreign_keys(sample_dfs)
+        self.assertTrue(fk_valid, f"Batch FK validation on canonical samples failed: {fk_errors}")
+
 
 if __name__ == "__main__":
     unittest.main()

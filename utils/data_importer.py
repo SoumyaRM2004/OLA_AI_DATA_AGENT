@@ -740,7 +740,7 @@ def normalize_value_by_type(
 
 def normalize_generic_value(val: Any) -> Any:
     """
-    Legacy helper: converts pandas / numpy NaN / NaT / missing values to Python None.
+    Converts pandas / numpy NaN / NaT / missing values to Python None.
     """
     if is_null_or_empty(val):
         return None
@@ -753,6 +753,65 @@ def normalize_generic_value(val: Any) -> Any:
     return val
 
 
+def normalize_header_name(header: Any) -> str:
+    """
+    Deterministically normalizes header names for comparison:
+    - Lowercases
+    - Strips whitespace
+    - Replaces spaces, hyphens, dots, slashes with underscores
+    - Removes non-alphanumeric/underscore characters
+    Example: 'User ID' -> 'user_id', '  first-name. ' -> 'first_name'
+    """
+    if header is None:
+        return ""
+    s = str(header).strip().lower()
+    s = re.sub(r'[\s\-./\\]+', '_', s)
+    s = re.sub(r'[^a-z0-9_]', '', s)
+    s = re.sub(r'_+', '_', s).strip('_')
+    return s
+
+
+# ============================================================
+# CANONICAL SAMPLES DICTIONARY (Single Source of Truth)
+# ============================================================
+
+CANONICAL_SAMPLES: Dict[str, str] = {
+    "users": """user_id,first_name,last_name,email,phone,city,province,user_type,signup_date,is_active
+101,Aarav,Sharma,aarav.sharma@example.com,+14165550101,Toronto,ON,rider,2024-01-15,True
+102,Priya,Patel,priya.patel@example.com,+16045550102,Vancouver,BC,rider,2024-02-20,True
+103,Rohan,Verma,rohan.verma@example.com,+14035550103,Calgary,AB,rider,2024-03-10,True
+104,Ananya,Iyer,ananya.iyer@example.com,+15145550104,Montreal,QC,rider,2024-04-05,True
+105,Kavita,Rao,kavita.rao@example.com,+16135550105,Ottawa,ON,rider,2024-05-12,False
+106,Vikram,Singh,vikram.singh@example.com,+14165550106,Toronto,ON,driver,2023-11-01,True
+107,Rahul,Nair,rahul.nair@example.com,+16045550107,Vancouver,BC,driver,2023-12-15,True
+108,Amit,Gupta,amit.gupta@example.com,+14035550108,Calgary,AB,driver,2024-01-20,True
+109,Deepak,Kumar,deepak.kumar@example.com,+15145550109,Montreal,QC,driver,2024-02-10,True
+110,Suresh,Reddy,suresh.reddy@example.com,+16135550110,Ottawa,ON,driver,2024-03-01,True""",
+    "vehicles": """vehicle_id,driver_id,make,model,year,license_plate,color,is_active
+201,106,Toyota,Camry,2022,TO-106-AB,Silver,True
+202,107,Honda,Civic,2021,VA-107-CD,White,True
+203,108,Hyundai,Elantra,2023,CA-108-EF,Black,True
+204,109,Nissan,Sentra,2020,MO-109-GH,Blue,True
+205,110,Kia,Forte,2022,OT-110-IJ,Grey,True""",
+    "rides": """ride_id,rider_id,driver_id,requested_at,pickup_time,dropoff_time,pickup_latitude,pickup_longitude,dropoff_latitude,dropoff_longitude,distance_km,fare,surge_multiplier,status,cancellation_reason
+301,101,106,2025-01-10 08:30:00,2025-01-10 08:35:00,2025-01-10 08:52:00,43.653226,-79.383184,43.642567,-79.387057,6.20,28.50,1.00,completed,
+302,102,107,2025-01-10 09:15:00,2025-01-10 09:20:00,2025-01-10 09:40:00,49.282729,-123.120738,49.260605,-123.146027,8.10,34.00,1.20,completed,
+303,103,108,2025-01-10 10:00:00,2025-01-10 10:06:00,2025-01-10 10:22:00,51.044733,-114.071883,51.050110,-114.085200,4.30,19.75,1.00,completed,
+304,104,109,2025-01-10 11:30:00,,,45.501689,-73.567256,45.510000,-73.570000,0.00,0.00,1.00,cancelled,Rider cancelled
+305,105,110,2025-01-10 12:00:00,2025-01-10 12:05:00,2025-01-10 12:25:00,45.421530,-75.697193,45.430000,-75.700000,5.00,22.50,1.00,completed,""",
+    "payments": """payment_id,ride_id,user_id,amount,payment_method,payment_status,transaction_id,payment_time
+401,301,101,28.50,card,success,TXN-401-20250110,2025-01-10 08:53:00
+402,302,102,34.00,upi,success,TXN-402-20250110,2025-01-10 09:41:00
+403,303,103,19.75,wallet,success,TXN-403-20250110,2025-01-10 10:23:00
+404,305,105,22.50,cash,success,TXN-404-20250110,2025-01-10 12:26:00""",
+    "ratings": """rating_id,ride_id,rider_id,driver_id,rating,comment,rated_at
+501,301,101,106,5,Great ride very polite driver!,2025-01-10 08:55:00
+502,302,102,107,4,Smooth trip through downtown,2025-01-10 09:45:00
+503,303,103,108,5,Quick arrival and clean car,2025-01-10 10:25:00
+504,305,105,110,5,Excellent route navigation,2025-01-10 12:30:00"""
+}
+
+
 # ============================================================
 # 5. DATASET AUTO-DETECTION & COLUMN MAPPING ENGINE
 # Header-based scoring engine and synonym matcher.
@@ -762,22 +821,14 @@ def detect_dataset_from_headers(
     headers: List[str]
 ) -> Dict[str, Any]:
     """
-    Inspects CSV headers and computes match scores against all 5 supported schemas.
+    Inspects CSV headers and computes deterministic match scores against all 5 supported schemas.
     Does NOT use the filename to determine dataset.
-    
-    Returns:
-        {
-            "detected_dataset": "users" | "vehicles" | "rides" | "payments" | "ratings" | None,
-            "confidence": "High" | "Medium" | "Low",
-            "confidence_score": float (0-100),
-            "proposed_mappings": Dict[str, str],
-            "all_scores": Dict[str, float]
-        }
     """
-    clean_headers = [str(h).strip().lower() for h in headers if h is not None and str(h).strip()]
+    clean_headers = [normalize_header_name(h) for h in headers if h is not None and str(h).strip()]
     if not clean_headers:
         return {
             "detected_dataset": None,
+            "label": "Unknown",
             "confidence": "Low",
             "confidence_score": 0.0,
             "proposed_mappings": {},
@@ -795,41 +846,38 @@ def detect_dataset_from_headers(
 
         matched_canonical = set()
         table_mappings = {}
-        score = 0.0
 
-        for h in clean_headers:
+        for orig_h, h in zip(headers, clean_headers):
             canonical = None
             if h in canonical_cols:
                 canonical = h
-                weight = 3.0 if h == pk else (2.0 if h in req_cols else 1.0)
-                score += weight
             elif h in aliases:
                 canonical = aliases[h]
-                weight = 2.5 if canonical == pk else (1.8 if canonical in req_cols else 0.8)
-                score += weight
             
             if canonical:
                 matched_canonical.add(canonical)
-                table_mappings[h] = canonical
+                table_mappings[orig_h] = canonical
 
-        # Penalize if required columns are missing
         missing_req = req_cols - matched_canonical
-        if missing_req:
-            score -= (len(missing_req) * 1.5)
+        
+        # Exact Match on all uploaded columns matching canonical columns
+        if len(clean_headers) > 0 and len(matched_canonical) == len(clean_headers) and not missing_req:
+            score = 100.0
+        else:
+            req_coverage = len(req_cols.intersection(matched_canonical)) / max(len(req_cols), 1)
+            all_coverage = len(matched_canonical) / max(len(canonical_cols), 1)
+            score = (req_coverage * 70.0) + (all_coverage * 30.0)
+            if missing_req:
+                score = score * 0.5  # Penalize missing required columns
 
-        # Max possible score calculation
-        max_possible = (3.0 if pk in req_cols else 0) + (len(req_cols) * 2.0) + (len(canonical_cols - req_cols) * 1.0)
-        norm_score = max(0.0, min(100.0, (score / max(max_possible, 1.0)) * 100.0))
-
-        scores[tbl_name] = round(norm_score, 1)
+        scores[tbl_name] = round(max(0.0, min(100.0, score)), 1)
         mappings_by_dataset[tbl_name] = table_mappings
 
-    # Find highest score
     sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     best_table, best_score = sorted_scores[0]
     second_table, second_score = sorted_scores[1] if len(sorted_scores) > 1 else (None, 0.0)
 
-    if best_score >= 70.0 and (best_score - second_score >= 15.0 or best_score >= 85.0):
+    if best_score >= 80.0:
         confidence = "High"
         detected = best_table
     elif best_score >= 45.0:
@@ -841,7 +889,7 @@ def detect_dataset_from_headers(
 
     return {
         "detected_dataset": detected,
-        "label": TABLE_SCHEMAS.get(detected, {}).get("label") if detected else "Unknown",
+        "label": TABLE_SCHEMAS.get(detected, {}).get("label", "Unknown") if detected else "Unknown",
         "confidence": confidence,
         "confidence_score": best_score,
         "proposed_mappings": mappings_by_dataset.get(detected or "", {}),
@@ -856,7 +904,7 @@ def map_columns_to_schema(
 ) -> Dict[str, Any]:
     """
     Maps uploaded columns to canonical schema columns using custom mappings, exact matches, and aliases.
-    Identifies exact mappings, alias mappings, ambiguous columns, and extra unmapped columns.
+    Returns structured mapping details including uploaded header, canonical target, status, confidence, and reason.
     """
     clean_dataset = (dataset_type or "").lower().strip()
     if clean_dataset not in TABLE_SCHEMAS:
@@ -864,6 +912,7 @@ def map_columns_to_schema(
             "valid": False,
             "error": f"Invalid dataset type '{dataset_type}'.",
             "mapped_columns": {},
+            "mapping_details": [],
             "extra_columns": [],
             "missing_required": [],
             "ambiguous_columns": []
@@ -873,35 +922,38 @@ def map_columns_to_schema(
     canonical_cols = set(schema["columns"].keys())
     req_cols = set(schema["required_columns"])
     aliases = COLUMN_ALIASES.get(clean_dataset, {})
-    custom = {str(k).strip().lower(): str(v).strip().lower() for k, v in (custom_mappings or {}).items()}
+    custom = {normalize_header_name(k): normalize_header_name(v) for k, v in (custom_mappings or {}).items()}
 
     mapped_columns: Dict[str, str] = {}  # uploaded -> canonical
     mapping_details: List[Dict[str, Any]] = []
-    ambiguous_columns: List[Dict[str, Any]] = []
     used_canonical: Set[str] = set()
 
     for col in uploaded_columns:
-        c_clean = str(col).strip().lower()
+        norm = normalize_header_name(col)
         target = None
         status = "unmapped"
         confidence = 0
+        reason = "No safe mapping found (Extra column)"
 
-        if c_clean in custom:
-            custom_target = custom[c_clean]
+        if norm in custom:
+            custom_target = custom[norm]
             if custom_target in canonical_cols:
                 target = custom_target
                 status = "custom"
                 confidence = 100
-        elif c_clean in canonical_cols:
-            target = c_clean
+                reason = "User custom mapping override"
+        elif norm in canonical_cols:
+            target = norm
             status = "exact"
             confidence = 100
-        elif c_clean in aliases:
-            alias_target = aliases[c_clean]
+            reason = "Exact normalized header match"
+        elif norm in aliases:
+            alias_target = aliases[norm]
             if alias_target in canonical_cols:
                 target = alias_target
                 status = "alias"
-                confidence = 90
+                confidence = 95
+                reason = "Known configured alias"
 
         if target:
             mapped_columns[col] = target
@@ -910,18 +962,20 @@ def map_columns_to_schema(
                 "uploaded": col,
                 "canonical": target,
                 "status": status,
-                "confidence": confidence
+                "confidence": confidence,
+                "reason": reason
             })
         else:
             mapping_details.append({
                 "uploaded": col,
                 "canonical": None,
                 "status": "extra",
-                "confidence": 0
+                "confidence": 0,
+                "reason": "No safe mapping found (Extra column)"
             })
 
     extra_columns = [col for col in uploaded_columns if col not in mapped_columns]
-    missing_required = list(req_cols - used_canonical)
+    missing_required = sorted(list(req_cols - used_canonical))
 
     return {
         "valid": len(missing_required) == 0,
@@ -930,7 +984,7 @@ def map_columns_to_schema(
         "mapping_details": mapping_details,
         "extra_columns": extra_columns,
         "missing_required": missing_required,
-        "ambiguous_columns": ambiguous_columns
+        "ambiguous_columns": []
     }
 
 
@@ -1081,6 +1135,7 @@ def validate_csv_content(
         return False, None, None, structured_errors, warnings, metadata
 
     if not file_bytes or len(file_bytes.strip()) == 0:
+        metadata["validation_state"] = "EMPTY_CSV"
         err = StructuredValidationError(
             dataset=dataset_type or "Unknown",
             file=filename,
@@ -1096,6 +1151,7 @@ def validate_csv_content(
     try:
         raw_df = pd.read_csv(io.BytesIO(file_bytes), dtype=object)
     except Exception as e:
+        metadata["validation_state"] = "CSV_PARSE_FAILED"
         err = StructuredValidationError(
             dataset=dataset_type or "Unknown",
             file=filename,
@@ -1108,6 +1164,7 @@ def validate_csv_content(
         return False, None, None, structured_errors, warnings, metadata
 
     if raw_df.empty:
+        metadata["validation_state"] = "EMPTY_CSV"
         err = StructuredValidationError(
             dataset=dataset_type or "Unknown",
             file=filename,
