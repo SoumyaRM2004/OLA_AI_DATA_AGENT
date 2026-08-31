@@ -77,6 +77,13 @@ class LoadDbRequest(BaseModel):
 
 # ------------------- API ENDPOINTS -------------------
 
+@app.get("/health")
+@app.get("/api/health")
+async def health_check():
+    """Liveness & readiness health check endpoint for cloud orchestrators (e.g. Render)."""
+    return {"status": "ok"}
+
+
 @app.get("/api/chats")
 async def list_chats_endpoint():
     """Returns list of all persistent chat sessions."""
@@ -668,5 +675,7 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n🚀 Starting OLA AI Data Agent Web Server on http://localhost:8000 ...")
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.getenv("PORT", 8000))
+    print(f"\n🚀 Starting OLA AI Data Agent Web Server on http://0.0.0.0:{port} ...")
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
+

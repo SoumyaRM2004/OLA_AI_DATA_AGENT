@@ -188,13 +188,46 @@ uv sync
 uv run python feed_db.py
 ```
 
-### 4. Start the Application Server
+### 4. Start the Application Server (Local Development)
 
 ```powershell
 uv run python server.py
 ```
 
 👉 Open **`http://localhost:8000`** in your browser to access the complete visual dashboard!
+
+---
+
+## 🚀 Production Deployment (Render Web Service)
+
+To deploy on **Render** (or any cloud container platform):
+
+1. **Service Type**: Web Service
+2. **Environment**: Python 3.12+
+3. **Build Command**:
+   ```bash
+   pip install -r requirements.txt
+   # Or using uv:
+   curl -LsSf https://astral.sh/uv/install.sh | sh && uv sync --frozen
+   ```
+4. **Start Command**:
+   ```bash
+   uvicorn server:app --host 0.0.0.0 --port $PORT --workers 1
+   ```
+   > ℹ️ **Single-Worker Note**: Run with `--workers 1` because chat conversations are persisted to `data/chats/` on the local disk.
+5. **Health Check Path**:
+   ```text
+   /health
+   ```
+6. **Environment Variables**:
+   - `GROQ_API_KEY`: Groq API Key
+   - `GEMINI_API_KEY`: Google Gemini API Key
+   - `host`: PostgreSQL host endpoint
+   - `port`: PostgreSQL port (default `5432`)
+   - `database`: PostgreSQL database name
+   - `user`: PostgreSQL username
+   - `password`: PostgreSQL password
+   - `CORS_ORIGINS`: Allowed origins (e.g. `https://your-service.onrender.com`)
 
 ---
 

@@ -14,7 +14,17 @@ class TestDataFreshnessAndMultiChat(unittest.TestCase):
         cls.db = DatabaseConnection()
 
     def test_01_database_connection_and_live_schema(self):
-        """Verify that Database Explorer and Schema endpoints query PostgreSQL live."""
+        """Verify that Health check, Database Explorer, and Schema endpoints query PostgreSQL live."""
+        # 1. Health check verification
+        health_res = self.client.get("/health")
+        self.assertEqual(health_res.status_code, 200)
+        self.assertEqual(health_res.json(), {"status": "ok"})
+
+        api_health_res = self.client.get("/api/health")
+        self.assertEqual(api_health_res.status_code, 200)
+        self.assertEqual(api_health_res.json(), {"status": "ok"})
+
+        # 2. Schema verification
         res = self.client.get("/api/schema")
         self.assertEqual(res.status_code, 200)
         data = res.json()
