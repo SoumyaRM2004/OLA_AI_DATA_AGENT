@@ -196,6 +196,9 @@ def clean_column_name(col_name: str) -> str:
     col_l = col_name.lower().strip()
     if col_l in COLUMN_NAME_MAP:
         return COLUMN_NAME_MAP[col_l]
+    if col_l.endswith("_rank"):
+        prefix = col_name[:-5].replace("_", " ").title()
+        return f"{prefix} Rank"
     if col_l.startswith("is_"):
         return col_name[3:].replace("_", " ").title() + " Status"
     if col_l.endswith("_count"):
@@ -255,7 +258,7 @@ def is_temporal_val(col: str, v: Any) -> bool:
 
 def classify_column(col: str, vals: List[Any]) -> Dict[str, Any]:
     """Classifies a column into semantic types based on schema and values."""
-    col_l = col.lower()
+    col_l = col.lower().strip()
     non_null_vals = [v for v in vals if v is not None]
 
     if not non_null_vals:
@@ -271,23 +274,34 @@ def classify_column(col: str, vals: List[Any]) -> Dict[str, Any]:
 
     # 3. Numeric check
     if all(is_numeric_val(v) for v in non_null_vals):
-        # Determine semantic metric type
-        if any(k in col_l for k in ["rate", "percentage", "percent", "pct", "_rate"]):
+        # PRIORITY A: Ranking / Ordinal / Position check (MUST precede rate/currency checks)
+        # e.g., rank, rate_rank, ranking, position, row_number, dense_rank
+        if col_l == "rank" or any(k in col_l for k in ["_rank", "rank_", "ranking", "position", "row_number", "dense_rank"]):
+            m_type = "rank"
+        # PRIORITY B: Rate / Percentage check
+        # e.g., cancellation_rate, completion_rate, percentage, percent, pct, percent_canceled_rainy
+        elif any(k in col_l for k in ["rate", "percentage", "percent", "pct", "_rate"]):
             m_type = "rate"
+        # PRIORITY C: Monetary / Currency check
+        # e.g., fare, revenue, amount, price, cost, total_revenue, avg_fare
         elif any(k in col_l for k in ["fare", "amount", "revenue", "price", "cost"]):
             m_type = "currency"
+        # PRIORITY D: Ratings & Scores
         elif any(k in col_l for k in ["rating", "score"]):
             m_type = "rating"
+        # PRIORITY E: Multipliers
         elif any(k in col_l for k in ["surge", "multiplier"]):
             m_type = "multiplier"
-        elif any(k in col_l for k in ["distance", "km"]):
+        # PRIORITY F: Distance
+        elif any(k in col_l for k in ["distance", "km", "miles"]):
             m_type = "distance"
+        # PRIORITY G: Averages
         elif any(k in col_l for k in ["avg", "average", "mean"]):
             m_type = "average"
+        # PRIORITY H: Integer Counts
         elif any(k in col_l for k in ["count", "total", "rides", "users", "vehicles", "payments", "ratings", "records", "completed", "cancelled", "num_"]):
             m_type = "count"
         else:
-            # Check if values are all integers
             try:
                 if all(float(v).is_integer() for v in non_null_vals):
                     m_type = "count"
@@ -308,7 +322,9 @@ def format_metric_value(raw_val: Any, metric_type: str) -> str:
         return "N/A"
     try:
         val_f = float(raw_val)
-        if metric_type == "rate":
+        if metric_type == "rank":
+            return f"{int(val_f)}"
+        elif metric_type == "rate":
             # If 0.5 was returned representing 50%, format as 50.00% if < 1.0, otherwise 50.00%
             if 0 < val_f <= 1.0 and val_f != 1:
                 val_f = val_f * 100.0

@@ -1,5 +1,5 @@
 import unittest
-from agents.data_agent import auto_detect_chart, clean_column_name, format_metric_value
+from agents.data_agent import auto_detect_chart, clean_column_name, format_metric_value, classify_column
 
 
 class TestVisualizationLayer(unittest.TestCase):
@@ -12,6 +12,7 @@ class TestVisualizationLayer(unittest.TestCase):
     5. Part-to-whole (doughnut).
     6. Two continuous numeric variables (scatter plot).
     7. Empty result handling (no fake chart).
+    8. Ordinal / Ranking columns (rate_rank, dense_rank, position) treated as plain integers, NOT percentages or currencies.
     """
 
     def test_01_single_row_multiple_kpis(self):
@@ -146,6 +147,45 @@ class TestVisualizationLayer(unittest.TestCase):
 
         self.assertTrue(chart_info["can_chart"])
         self.assertEqual(chart_info["type"], "scatter")
+
+    def test_09_ranking_column_semantic_classification(self):
+        """TEST 9: Ranking columns (rate_rank, dense_rank, position) must be classified as 'rank', not 'rate'."""
+        self.assertEqual(classify_column("rate_rank", [1, 2, 5])["metric_type"], "rank")
+        self.assertEqual(classify_column("rank", [1, 2, 3])["metric_type"], "rank")
+        self.assertEqual(classify_column("dense_rank", [1, 2, 3])["metric_type"], "rank")
+        self.assertEqual(classify_column("position", [1, 2, 3])["metric_type"], "rank")
+        self.assertEqual(classify_column("row_number", [1, 2, 3])["metric_type"], "rank")
+
+        # Must format as plain integers, NOT percentage or currency
+        self.assertEqual(format_metric_value(1, "rank"), "1")
+        self.assertEqual(format_metric_value(2, "rank"), "2")
+        self.assertEqual(format_metric_value(5, "rank"), "5")
+
+    def test_10_cancellation_rate_and_rate_rank_query_dataset(self):
+        """TEST 10: 8-city cancellation query with rate_rank must format cancellation_rate as % and rate_rank as integer."""
+        columns = ["city", "total_rides", "cancelled_rides", "cancellation_rate", "rate_rank"]
+        records = [
+            {"city": "Calgary", "total_rides": 2, "cancelled_rides": 1, "cancellation_rate": 50.0, "rate_rank": 1},
+            {"city": "Winnipeg", "total_rides": 3, "cancelled_rides": 1, "cancellation_rate": 33.33, "rate_rank": 2},
+            {"city": "Vancouver", "total_rides": 3, "cancelled_rides": 1, "cancellation_rate": 33.33, "rate_rank": 2},
+            {"city": "Halifax", "total_rides": 3, "cancelled_rides": 1, "cancellation_rate": 33.33, "rate_rank": 2},
+            {"city": "Ottawa", "total_rides": 2, "cancelled_rides": 0, "cancellation_rate": 0.0, "rate_rank": 5},
+            {"city": "Edmonton", "total_rides": 3, "cancelled_rides": 0, "cancellation_rate": 0.0, "rate_rank": 5},
+            {"city": "Toronto", "total_rides": 2, "cancelled_rides": 0, "cancellation_rate": 0.0, "rate_rank": 5},
+            {"city": "Montreal", "total_rides": 2, "cancelled_rides": 0, "cancellation_rate": 0.0, "rate_rank": 5}
+        ]
+
+        chart_info = auto_detect_chart(columns, records)
+
+        # Primary plotted metric MUST be cancellation_rate, NOT rate_rank
+        self.assertEqual(chart_info["value_column"], "cancellation_rate")
+        self.assertEqual(chart_info["metric_type"], "rate")
+        self.assertEqual(chart_info["values"][0], 50.0)
+        self.assertEqual(chart_info["values"][4], 0.0)
+
+        # Labels
+        self.assertEqual(clean_column_name("rate_rank"), "Rate Rank")
+        self.assertEqual(clean_column_name("cancellation_rate"), "Cancellation Rate (%)")
 
 
 if __name__ == "__main__":

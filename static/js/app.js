@@ -731,6 +731,26 @@ function renderAgentResponse(data, timeStr = null) {
     if (window.lucide) lucide.createIcons();
 }
 
+function isRankColumn(colName) {
+    if (!colName) return false;
+    const col = String(colName).toLowerCase().trim();
+    return col === 'rank' || col.includes('_rank') || col.includes('rank_') || col.includes('ranking') || col.includes('position') || col.includes('row_number') || col.includes('dense_rank');
+}
+
+function isRateColumn(colName) {
+    if (!colName) return false;
+    const col = String(colName).toLowerCase().trim();
+    if (isRankColumn(col)) return false;
+    return col.includes('rate') || col.includes('percent') || col.includes('pct');
+}
+
+function isCurrencyColumn(colName) {
+    if (!colName) return false;
+    const col = String(colName).toLowerCase().trim();
+    if (isRankColumn(col)) return false;
+    return col.includes('fare') || col.includes('revenue') || col.includes('amount') || col.includes('price') || col.includes('cost');
+}
+
 function getCleanColumnName(colName) {
     if (!colName) return '';
     const col = String(colName).toLowerCase().trim();
@@ -785,6 +805,7 @@ function getCleanColumnName(colName) {
         "weather_code": "Weather Code"
     };
     if (map[col]) return map[col];
+    if (col.endsWith("_rank")) return col.substring(0, col.length - 5).replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()) + " Rank";
     if (col.startsWith("is_")) return col.substring(3).replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()) + " Status";
     if (col.endsWith("_count")) return col.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase());
     if (col.endsWith("_rate")) return col.substring(0, col.length - 5).replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()) + " Rate (%)";
@@ -810,9 +831,11 @@ function formatTableCell(val, colName) {
     // 2. Numeric formatting
     const num = Number(val);
     if (!isNaN(num) && typeof val !== 'boolean' && strVal !== '') {
-        if (col.includes('rate') || col.includes('percent') || col.includes('pct')) {
+        if (isRankColumn(colName)) {
+            return `<span style="font-family: var(--font-mono); font-weight: 500;">${Number.isInteger(num) ? num : Math.round(num)}</span>`;
+        } else if (isRateColumn(colName)) {
             return `<span style="font-family: var(--font-mono); font-weight: 500;">${num.toFixed(2)}%</span>`;
-        } else if (col.includes('fare') || col.includes('revenue') || col.includes('amount') || col.includes('price')) {
+        } else if (isCurrencyColumn(colName)) {
             return `<span style="font-family: var(--font-mono); color: #34D399;">₹${num.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>`;
         } else if (col.includes('rating') || col.includes('score')) {
             return `<span style="font-family: var(--font-mono); color: #FBBF24;">${num.toFixed(2)} ★</span>`;
@@ -976,12 +999,14 @@ function renderDynamicChart(canvasId, chartConfig) {
                                 const cleanKey = getCleanColumnName(key);
                                 let formattedVal = val;
                                 if (typeof val === 'number') {
-                                    if (key.includes('rate') || key.includes('percent')) {
+                                    if (isRankColumn(key)) {
+                                        formattedVal = Number.isInteger(val) ? val : Math.round(val);
+                                    } else if (isRateColumn(key)) {
                                         formattedVal = `${val.toFixed(2)}%`;
-                                    } else if (key.includes('fare') || key.includes('revenue') || key.includes('amount')) {
+                                    } else if (isCurrencyColumn(key)) {
                                         formattedVal = `₹${val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
                                     } else {
-                                        formattedVal = val.toLocaleString();
+                                        formattedVal = Number.isInteger(val) ? val.toLocaleString() : val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
                                     }
                                 }
                                 lines.push(`${cleanKey}: ${formattedVal}`);
