@@ -137,165 +137,437 @@ data_agent = data_agent_graph.compile()
 
 # ----------------------- UNIFIED QUERY HELPER -----------------------
 
-def auto_detect_chart(columns: List[str], records: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Analyzes query result columns and records to automatically detect categorical (X-axis)
-    and numeric metric (Y-axis) columns, formatting boolean labels and generating human-readable titles.
-    """
-    if not records or len(records) < 1 or len(columns) < 2:
-        return {"can_chart": False}
+# ----------------------- UNIFIED QUERY HELPER & VISUALIZATION ENGINE -----------------------
 
-    def is_bool_val(v: Any) -> bool:
-        return isinstance(v, bool) or str(v).lower() in ("true", "false")
+COLUMN_NAME_MAP = {
+    "user_id": "User ID",
+    "rider_id": "Rider ID",
+    "driver_id": "Driver ID",
+    "vehicle_id": "Vehicle ID",
+    "ride_id": "Ride ID",
+    "payment_id": "Payment ID",
+    "rating_id": "Rating ID",
+    "total_users": "Total Users",
+    "active_users": "Active Users",
+    "inactive_users": "Inactive Users",
+    "total_rides": "Total Rides",
+    "ride_count": "Ride Count",
+    "completed_rides": "Completed Rides",
+    "cancelled_rides": "Cancelled Rides",
+    "cancellation_rate": "Cancellation Rate (%)",
+    "percent_canceled_rainy": "Rainy Cancellation Rate (%)",
+    "percent_canceled_non_rainy": "Non-Rainy Cancellation Rate (%)",
+    "total_revenue": "Total Revenue",
+    "revenue": "Revenue",
+    "avg_fare": "Average Fare",
+    "fare": "Fare",
+    "amount": "Amount",
+    "total_amount": "Total Amount",
+    "surge_multiplier": "Surge Multiplier",
+    "avg_surge": "Average Surge Multiplier",
+    "avg_rating": "Average Rating",
+    "rating": "Rating",
+    "distance_km": "Distance (km)",
+    "avg_distance": "Average Distance (km)",
+    "payment_method": "Payment Method",
+    "payment_status": "Payment Status",
+    "vehicle_type": "Vehicle Type",
+    "user_type": "User Type",
+    "city": "City",
+    "status": "Ride Status",
+    "cancellation_reason": "Cancellation Reason",
+    "is_rainy": "Weather Condition",
+    "is_active": "Account Status",
+    "recorded_at": "Recorded At",
+    "requested_at": "Requested At",
+    "pickup_time": "Pickup Time",
+    "dropoff_time": "Dropoff Time",
+    "signup_date": "Signup Date",
+    "temperature_c": "Temperature (°C)",
+    "precipitation_mm": "Precipitation (mm)",
+    "rain_mm": "Rainfall (mm)",
+    "avg_rainfall_mm": "Average Rainfall (mm)",
+    "weather_code": "Weather Code"
+}
 
-    def is_numeric_val(v: Any) -> bool:
-        if isinstance(v, bool):
-            return False
-        if isinstance(v, (int, float)):
-            return True
-        try:
-            float(v)
-            return True
-        except (ValueError, TypeError):
-            return False
 
-    def is_temporal_val(col: str, v: Any) -> bool:
-        col_l = col.lower()
-        if any(k in col_l for k in ["date", "time", "day", "month", "year", "recorded_at", "requested_at"]):
-            return True
-        v_str = str(v)
-        return len(v_str) >= 10 and (v_str[4] == "-" or v_str[2] == "/")
+def clean_column_name(col_name: str) -> str:
+    """Returns a deterministic, human-readable title for any column name."""
+    col_l = col_name.lower().strip()
+    if col_l in COLUMN_NAME_MAP:
+        return COLUMN_NAME_MAP[col_l]
+    if col_l.startswith("is_"):
+        return col_name[3:].replace("_", " ").title() + " Status"
+    if col_l.endswith("_count"):
+        prefix = col_name[:-6].replace("_", " ").title()
+        return f"{prefix} Count"
+    if col_l.endswith("_rate"):
+        prefix = col_name[:-5].replace("_", " ").title()
+        return f"{prefix} Rate (%)"
+    return col_name.replace("_", " ").title()
 
-    num_candidates = []
-    cat_candidates = []
 
-    for col in columns:
-        vals = [r.get(col) for r in records if r.get(col) is not None]
-        if not vals:
-            continue
+def format_display_label(col_name: str, raw_val: Any) -> str:
+    """Formats category/boolean labels cleanly for charts and tables."""
+    if raw_val is None:
+        return "Unknown"
+    s_val = str(raw_val).lower().strip()
+    if isinstance(raw_val, bool) or s_val in ("true", "false"):
+        is_true = raw_val is True or s_val == "true"
+        col_l = col_name.lower()
+        if "rain" in col_l or "weather" in col_l:
+            return "Rainy" if is_true else "Non-Rainy"
+        elif "active" in col_l:
+            return "Active" if is_true else "Inactive"
+        elif "completed" in col_l:
+            return "Completed" if is_true else "Incomplete"
+        elif "cancel" in col_l:
+            return "Cancelled" if is_true else "Not Cancelled"
+        elif "success" in col_l:
+            return "Successful" if is_true else "Failed"
+        return "Yes" if is_true else "No"
+    return str(raw_val).replace("_", " ").title() if isinstance(raw_val, str) and len(str(raw_val)) < 30 else str(raw_val)
 
-        # 1. Boolean check (categorical)
-        if all(is_bool_val(v) for v in vals):
-            cat_candidates.append((col, "boolean", 12))
-        elif any(is_bool_val(v) for v in vals):
-            cat_candidates.append((col, "boolean", 10))
-        # 2. Temporal check (categorical / line axis)
-        elif any(is_temporal_val(col, v) for v in vals):
-            cat_candidates.append((col, "temporal", 11))
-        # 3. Numeric check (metric axis)
-        elif all(is_numeric_val(v) for v in vals):
-            score = 10
-            col_l = col.lower()
-            if any(k in col_l for k in ["count", "avg", "sum", "total", "fare", "rate", "revenue", "amount", "temp", "precip", "rain", "percent", "pct"]):
-                score += 5
-            num_candidates.append((col, score))
-        # 4. Standard categorical (string)
+
+def is_bool_val(v: Any) -> bool:
+    return isinstance(v, bool) or str(v).lower().strip() in ("true", "false")
+
+
+def is_numeric_val(v: Any) -> bool:
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, (int, float)):
+        return True
+    try:
+        float(v)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def is_temporal_val(col: str, v: Any) -> bool:
+    col_l = col.lower()
+    if any(k in col_l for k in ["date", "time", "day", "month", "year", "recorded_at", "requested_at", "signup_date", "created_at"]):
+        return True
+    v_str = str(v).strip()
+    return len(v_str) >= 10 and (v_str[4] == "-" or v_str[2] == "/")
+
+
+def classify_column(col: str, vals: List[Any]) -> Dict[str, Any]:
+    """Classifies a column into semantic types based on schema and values."""
+    col_l = col.lower()
+    non_null_vals = [v for v in vals if v is not None]
+
+    if not non_null_vals:
+        return {"type": "text", "is_numeric": False, "is_temporal": False, "is_boolean": False, "metric_type": "unknown"}
+
+    # 1. Boolean check
+    if all(is_bool_val(v) for v in non_null_vals):
+        return {"type": "boolean", "is_numeric": False, "is_temporal": False, "is_boolean": True, "metric_type": "boolean"}
+
+    # 2. Temporal check
+    if any(is_temporal_val(col, v) for v in non_null_vals):
+        return {"type": "temporal", "is_numeric": False, "is_temporal": True, "is_boolean": False, "metric_type": "date"}
+
+    # 3. Numeric check
+    if all(is_numeric_val(v) for v in non_null_vals):
+        # Determine semantic metric type
+        if any(k in col_l for k in ["rate", "percentage", "percent", "pct", "_rate"]):
+            m_type = "rate"
+        elif any(k in col_l for k in ["fare", "amount", "revenue", "price", "cost"]):
+            m_type = "currency"
+        elif any(k in col_l for k in ["rating", "score"]):
+            m_type = "rating"
+        elif any(k in col_l for k in ["surge", "multiplier"]):
+            m_type = "multiplier"
+        elif any(k in col_l for k in ["distance", "km"]):
+            m_type = "distance"
+        elif any(k in col_l for k in ["avg", "average", "mean"]):
+            m_type = "average"
+        elif any(k in col_l for k in ["count", "total", "rides", "users", "vehicles", "payments", "ratings", "records", "completed", "cancelled", "num_"]):
+            m_type = "count"
         else:
-            cat_candidates.append((col, "categorical", 5))
+            # Check if values are all integers
+            try:
+                if all(float(v).is_integer() for v in non_null_vals):
+                    m_type = "count"
+                else:
+                    m_type = "numeric"
+            except Exception:
+                m_type = "numeric"
 
-    # Pick best numeric and categorical columns
-    num_candidates.sort(key=lambda x: x[1], reverse=True)
-    cat_candidates.sort(key=lambda x: x[2], reverse=True)
+        return {"type": "numeric", "is_numeric": True, "is_temporal": False, "is_boolean": False, "metric_type": m_type}
 
-    num_col = None
-    cat_col = None
+    # 4. Text / Categorical
+    return {"type": "categorical", "is_numeric": False, "is_temporal": False, "is_boolean": False, "metric_type": "text"}
 
-    if num_candidates:
-        num_col = num_candidates[0][0]
 
-    if cat_candidates:
-        for c in cat_candidates:
-            if c[0] != num_col:
-                cat_col = c[0]
-                break
-
-    # Fallbacks if one is missing
-    if cat_col is None and num_col is not None:
-        for c in columns:
-            if c != num_col:
-                cat_col = c
-                break
-    elif num_col is None and cat_col is not None:
-        for c in columns:
-            if c != cat_col and is_numeric_val(records[0].get(c)):
-                num_col = c
-                break
-
-    if not cat_col or not num_col or cat_col == num_col:
-        return {"can_chart": False}
-
-    def format_display_label(col_name: str, raw_val: Any) -> str:
-        if is_bool_val(raw_val):
-            is_true = raw_val is True or str(raw_val).lower() == "true"
-            col_l = col_name.lower()
-            if "rain" in col_l or "weather" in col_l:
-                return "Rainy" if is_true else "Non-Rainy"
-            elif "active" in col_l:
-                return "Active" if is_true else "Inactive"
-            elif "completed" in col_l:
-                return "Completed" if is_true else "Incomplete"
-            elif "cancel" in col_l:
-                return "Cancelled" if is_true else "Not Cancelled"
-            elif "success" in col_l:
-                return "Successful" if is_true else "Failed"
-            else:
-                return "Yes" if is_true else "No"
+def format_metric_value(raw_val: Any, metric_type: str) -> str:
+    """Formats metric numbers for display with appropriate units."""
+    if raw_val is None:
+        return "N/A"
+    try:
+        val_f = float(raw_val)
+        if metric_type == "rate":
+            # If 0.5 was returned representing 50%, format as 50.00% if < 1.0, otherwise 50.00%
+            if 0 < val_f <= 1.0 and val_f != 1:
+                val_f = val_f * 100.0
+            return f"{val_f:.2f}%"
+        elif metric_type == "currency":
+            return f"₹{val_f:,.2f}"
+        elif metric_type == "count":
+            return f"{int(val_f):,}"
+        elif metric_type == "rating":
+            return f"{val_f:.2f} ★"
+        elif metric_type == "multiplier":
+            return f"{val_f:.2f}x"
+        elif metric_type == "distance":
+            return f"{val_f:.2f} km"
+        else:
+            if val_f.is_integer():
+                return f"{int(val_f):,}"
+            return f"{val_f:,.2f}"
+    except (ValueError, TypeError):
         return str(raw_val)
 
-    def clean_column_name(col_name: str) -> str:
-        col_l = col_name.lower()
-        if col_l == "is_rainy":
-            return "Weather Condition"
-        elif col_l.startswith("is_"):
-            return col_name[3:].replace("_", " ").title() + " Status"
-        name_map = {
-            "avg_rainfall_mm": "Average Rainfall (mm)",
-            "avg_rainfall": "Average Rainfall (mm)",
-            "total_precip_mm": "Total Precipitation (mm)",
-            "ride_count": "Ride Count",
-            "total_rides": "Total Rides",
-            "avg_fare": "Average Fare",
-            "avg_rating": "Average Rating",
-            "total_revenue": "Total Revenue",
-            "cancellation_rate": "Cancellation Rate (%)",
-            "percent_canceled_rainy": "Rainy Cancellation %",
-            "percent_canceled_non_rainy": "Non-Rainy Cancellation %",
-            "surge_multiplier": "Surge Multiplier",
-            "avg_surge": "Average Surge Multiplier",
-            "transaction_count": "Transaction Count",
-            "user_count": "User Count"
+
+def auto_detect_chart(columns: List[str], records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Schema-aware, semantic, and deterministic visualization generator.
+    Inspects SQL column names, PostgreSQL data types, and value distributions.
+    
+    Generates:
+    - compact KPI cards for single-row multi-metric results (e.g. total_users & active_users)
+    - line charts for time-series data
+    - bar charts with rich context tooltips for category + rate/count
+    - grouped bar charts for multiple compatible counts
+    - doughnut charts for mutually exclusive part-to-whole categories (<= 6 slices)
+    - scatter plots for 2 continuous numeric variables
+    - table-only when data structure has no suitable chart
+    """
+    if not records or len(records) < 1 or not columns:
+        return {"can_chart": False, "mode": "none"}
+
+    col_profiles = {}
+    for col in columns:
+        vals = [r.get(col) for r in records]
+        col_profiles[col] = classify_column(col, vals)
+
+    # -------------------------------------------------------------
+    # SCENARIO 1: SINGLE ROW WITH MULTIPLE KPI METRICS (len(records) == 1)
+    # -------------------------------------------------------------
+    if len(records) == 1:
+        row = records[0]
+        numeric_cols = [c for c in columns if col_profiles[c]["is_numeric"]]
+
+        if len(numeric_cols) >= 1:
+            kpis = []
+            for c in numeric_cols:
+                raw_val = row.get(c)
+                fmt_val = format_metric_value(raw_val, col_profiles[c]["metric_type"])
+                kpis.append({
+                    "column": c,
+                    "label": clean_column_name(c),
+                    "value": fmt_val,
+                    "raw_value": raw_val,
+                    "metric_type": col_profiles[c]["metric_type"]
+                })
+
+            # Check for logical denominator/numerator comparison (e.g. active_users / total_users)
+            comparison = None
+            if len(numeric_cols) >= 2:
+                denom_col = next((c for c in numeric_cols if any(k in c.lower() for k in ["total", "all", "sum"])), None)
+                if denom_col:
+                    num_col = next((c for c in numeric_cols if c != denom_col), None)
+                    if num_col:
+                        try:
+                            n_val = float(row.get(num_col) or 0)
+                            d_val = float(row.get(denom_col) or 0)
+                            if d_val > 0:
+                                pct = round((n_val / d_val) * 100.0, 2)
+                                comparison = {
+                                    "numerator_label": clean_column_name(num_col),
+                                    "denominator_label": clean_column_name(denom_col),
+                                    "numerator_val": n_val,
+                                    "denominator_val": d_val,
+                                    "percentage": pct,
+                                    "ratio_text": f"{int(n_val) if n_val.is_integer() else n_val:,} / {int(d_val) if d_val.is_integer() else d_val:,} ({pct:.2f}%)"
+                                }
+                        except Exception:
+                            pass
+
+            return {
+                "can_chart": True,
+                "mode": "kpi_cards",
+                "title": "Summary Metrics",
+                "kpis": kpis,
+                "comparison": comparison,
+                "columns": columns,
+                "records": records
+            }
+        else:
+            return {"can_chart": False, "mode": "table_only"}
+
+    # -------------------------------------------------------------
+    # SCENARIO 2: MULTI-ROW DATA (len(records) >= 2)
+    # -------------------------------------------------------------
+    temporal_cols = [c for c in columns if col_profiles[c]["is_temporal"]]
+    boolean_cols = [c for c in columns if col_profiles[c]["is_boolean"]]
+    categorical_cols = [c for c in columns if not col_profiles[c]["is_numeric"] and not col_profiles[c]["is_temporal"]]
+    numeric_cols = [c for c in columns if col_profiles[c]["is_numeric"]]
+
+    # CASE A: TIME SERIES (Temporal column exists + numeric columns)
+    if temporal_cols and numeric_cols:
+        time_col = temporal_cols[0]
+        labels = [str(r.get(time_col))[:16] for r in records]
+
+        datasets = []
+        for n_col in numeric_cols[:3]:
+            vals = [float(r.get(n_col) or 0) if r.get(n_col) is not None else 0.0 for r in records]
+            datasets.append({
+                "label": clean_column_name(n_col),
+                "column": n_col,
+                "data": vals,
+                "metric_type": col_profiles[n_col]["metric_type"]
+            })
+
+        title = "Rides Over Time" if any("ride" in c.lower() for c in numeric_cols) else f"{clean_column_name(numeric_cols[0])} Over Time"
+        return {
+            "can_chart": True,
+            "mode": "chart",
+            "type": "line",
+            "title": title,
+            "label_column": time_col,
+            "labels": labels,
+            "values": datasets[0]["data"] if datasets else [],
+            "datasets": datasets,
+            "raw_records": records
         }
-        return name_map.get(col_l, col_name.replace("_", " ").title())
 
-    labels = [format_display_label(cat_col, r.get(cat_col)) for r in records]
-    values = []
-    for r in records:
-        try:
-            v = r.get(num_col)
-            values.append(float(v) if v is not None else 0.0)
-        except (ValueError, TypeError):
-            values.append(0.0)
+    # CASE B: CATEGORY (or Boolean) + NUMERIC METRICS
+    category_col = None
+    if categorical_cols:
+        category_col = categorical_cols[0]
+    elif boolean_cols:
+        category_col = boolean_cols[0]
 
-    # Determine chart type
-    is_temporal = any(k in cat_col.lower() for k in ["date", "time", "day", "month", "year", "recorded_at", "requested_at"])
-    if is_temporal:
-        chart_type = "line"
-    elif len(records) <= 6 and any(k in cat_col.lower() for k in ["status", "payment_method", "method", "user_type", "type"]):
-        chart_type = "doughnut"
-    else:
-        chart_type = "bar"
+    if category_col and numeric_cols:
+        labels = [format_display_label(category_col, r.get(category_col)) for r in records]
 
-    title = f"{clean_column_name(num_col)} by {clean_column_name(cat_col)}"
+        rate_cols = [c for c in numeric_cols if col_profiles[c]["metric_type"] == "rate"]
+        count_cols = [c for c in numeric_cols if col_profiles[c]["metric_type"] == "count"]
 
-    return {
-        "can_chart": True,
-        "type": chart_type,
-        "label_column": cat_col,
-        "value_column": num_col,
-        "labels": labels,
-        "values": values,
-        "title": title
-    }
+        # 1. Category + Rate/Percentage with Supporting Metrics
+        if rate_cols:
+            primary_rate_col = rate_cols[0]
+            values = [float(r.get(primary_rate_col) or 0) if r.get(primary_rate_col) is not None else 0.0 for r in records]
+            title = f"{clean_column_name(primary_rate_col)} by {clean_column_name(category_col)}"
+            return {
+                "can_chart": True,
+                "mode": "chart",
+                "type": "bar",
+                "title": title,
+                "label_column": category_col,
+                "value_column": primary_rate_col,
+                "labels": labels,
+                "values": values,
+                "metric_type": "rate",
+                "datasets": [{
+                    "label": clean_column_name(primary_rate_col),
+                    "column": primary_rate_col,
+                    "data": values,
+                    "metric_type": "rate"
+                }],
+                "raw_records": records
+            }
+
+        # 2. Category + Multiple Compatible Counts (Grouped Bar Chart)
+        if len(count_cols) >= 2:
+            datasets = []
+            for n_col in count_cols[:4]:
+                vals = [float(r.get(n_col) or 0) if r.get(n_col) is not None else 0.0 for r in records]
+                datasets.append({
+                    "label": clean_column_name(n_col),
+                    "column": n_col,
+                    "data": vals,
+                    "metric_type": "count"
+                })
+            title = f"{' & '.join(clean_column_name(c) for c in count_cols[:2])} by {clean_column_name(category_col)}"
+            return {
+                "can_chart": True,
+                "mode": "chart",
+                "type": "grouped_bar",
+                "title": title,
+                "label_column": category_col,
+                "labels": labels,
+                "values": datasets[0]["data"] if datasets else [],
+                "datasets": datasets,
+                "raw_records": records
+            }
+
+        # 3. Category + Single Numeric Metric
+        primary_metric = numeric_cols[0]
+        values = [float(r.get(primary_metric) or 0) if r.get(primary_metric) is not None else 0.0 for r in records]
+
+        # Part-to-whole check (doughnut)
+        is_part_to_whole = (
+            len(records) <= 6 and
+            any(k in category_col.lower() for k in ["status", "payment_method", "user_type", "vehicle_type", "method"])
+        )
+        chart_type = "doughnut" if is_part_to_whole else "bar"
+
+        cat_clean = clean_column_name(category_col)
+        metric_clean = clean_column_name(primary_metric)
+
+        if "status" in category_col.lower():
+            title = f"Rides by {cat_clean}" if "ride" in primary_metric.lower() or "count" in primary_metric.lower() else f"{metric_clean} by {cat_clean}"
+        elif "payment_method" in category_col.lower():
+            title = f"{metric_clean} by {cat_clean}"
+        else:
+            title = f"{metric_clean} by {cat_clean}"
+
+        return {
+            "can_chart": True,
+            "mode": "chart",
+            "type": chart_type,
+            "title": title,
+            "label_column": category_col,
+            "value_column": primary_metric,
+            "labels": labels,
+            "values": values,
+            "metric_type": col_profiles[primary_metric]["metric_type"],
+            "datasets": [{
+                "label": metric_clean,
+                "column": primary_metric,
+                "data": values,
+                "metric_type": col_profiles[primary_metric]["metric_type"]
+            }],
+            "raw_records": records
+        }
+
+    # CASE C: TWO CONTINUOUS NUMERIC VARIABLES (Scatter Plot)
+    if len(numeric_cols) >= 2 and len(records) >= 5 and not categorical_cols:
+        x_col = numeric_cols[0]
+        y_col = numeric_cols[1]
+        scatter_points = [{"x": float(r.get(x_col) or 0), "y": float(r.get(y_col) or 0)} for r in records]
+        return {
+            "can_chart": True,
+            "mode": "chart",
+            "type": "scatter",
+            "title": f"{clean_column_name(y_col)} vs {clean_column_name(x_col)}",
+            "x_column": x_col,
+            "y_column": y_col,
+            "x_label": clean_column_name(x_col),
+            "y_label": clean_column_name(y_col),
+            "values": [],
+            "datasets": [{
+                "label": f"{clean_column_name(y_col)} vs {clean_column_name(x_col)}",
+                "data": scatter_points
+            }],
+            "raw_records": records
+        }
+
+    return {"can_chart": False, "mode": "table_only"}
 
 
 def execute_agent_query(user_question: str) -> Dict[str, Any]:
@@ -304,7 +576,8 @@ def execute_agent_query(user_question: str) -> Dict[str, Any]:
     rich metadata for the UI including reasoning steps, SQL, table data, and chart info.
     """
     import time
-    for attempt in range(2):
+    last_error = None
+    for attempt in range(3):
         try:
             response = data_agent.invoke(
                 {
@@ -367,26 +640,28 @@ def execute_agent_query(user_question: str) -> Dict[str, Any]:
                     "columns": [],
                     "rows": [],
                     "records": [],
-                    "chart": {"can_chart": False}
+                    "chart": {"can_chart": False, "mode": "none"}
                 }
 
         except Exception as e:
-            if attempt == 0 and ("connection" in str(e).lower() or "timeout" in str(e).lower() or "disconnected" in str(e).lower()):
-                time.sleep(1)
+            last_error = e
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
                 continue
-            return {
-                "success": False,
-                "route": "unknown",
-                "question": user_question,
-                "answer": f"Agent encountered an error: {str(e)}",
-                "timeline": [
-                    {"step": "error", "title": "Error Occurred", "status": "failed", "detail": str(e)}
-                ],
-                "columns": [],
-                "rows": [],
-                "records": [],
-                "chart": {"can_chart": False}
-            }
+
+    return {
+        "success": False,
+        "route": "unknown",
+        "question": user_question,
+        "answer": f"Agent encountered an error: {str(last_error)}",
+        "timeline": [
+            {"step": "error", "title": "Error Occurred", "status": "failed", "detail": str(last_error)}
+        ],
+        "columns": [],
+        "rows": [],
+        "records": [],
+        "chart": {"can_chart": False, "mode": "none"}
+    }
 
 
 if __name__ == "__main__":

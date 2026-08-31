@@ -629,21 +629,49 @@ function renderAgentResponse(data, timeStr = null) {
     // 2. Main Answer Text
     html += `<div class="formatted-answer">${formatMarkdownText(data.answer)}</div>`;
 
-    // 3. Visualization Container (Chart + Interactive Table)
+    // 3. Visualization Container (Chart / KPI Cards + Interactive Table)
     const uniqueVisId = 'vis-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
     const hasData = data.rows && data.rows.length > 0;
     const canChart = data.chart && data.chart.can_chart;
+    const chartMode = data.chart ? data.chart.mode : 'none';
 
     if (hasData || canChart) {
         html += `
             <div class="data-vis-container" id="${uniqueVisId}">
                 <div class="vis-header">
                     <span class="vis-title"><i data-lucide="bar-chart-2"></i> Result Visualization & Data</span>
-                    <button class="btn-refresh" onclick="downloadCsv('${uniqueVisId}')"><i data-lucide="download"></i> Export CSV</button>
+                    <button class="btn-export-csv" onclick="downloadCsv('${uniqueVisId}')"><i data-lucide="download"></i> Export CSV</button>
                 </div>
         `;
 
-        if (canChart) {
+        // 3A. KPI Cards Mode (Single row with multiple metrics)
+        if (canChart && chartMode === 'kpi_cards' && data.chart.kpis) {
+            html += `
+                <div class="vis-kpi-container">
+                    <div class="vis-kpi-grid">
+                        ${data.chart.kpis.map(k => `
+                            <div class="vis-kpi-card">
+                                <span class="vis-kpi-label">${escapeHtml(k.label)}</span>
+                                <span class="vis-kpi-value">${escapeHtml(k.value)}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                    ${data.chart.comparison ? `
+                        <div class="vis-kpi-comparison">
+                            <div class="kpi-comp-header">
+                                <span class="kpi-comp-title"><i data-lucide="pie-chart"></i> ${escapeHtml(data.chart.comparison.numerator_label)} vs ${escapeHtml(data.chart.comparison.denominator_label)}</span>
+                                <span class="kpi-comp-badge">${escapeHtml(data.chart.comparison.ratio_text)}</span>
+                            </div>
+                            <div class="kpi-comp-bar-track">
+                                <div class="kpi-comp-bar-fill" style="width: ${Math.min(100, Math.max(0, data.chart.comparison.percentage))}%;"></div>
+                            </div>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+        // 3B. Standard Chart Mode (Bar, Line, Doughnut, Scatter, Grouped Bar)
+        else if (canChart && (chartMode === 'chart' || !chartMode)) {
             html += `
                 <div class="vis-chart-box">
                     <canvas id="chart-${uniqueVisId}"></canvas>
@@ -651,19 +679,20 @@ function renderAgentResponse(data, timeStr = null) {
             `;
         }
 
+        // 3C. Interactive Result Table (Always displayed for tabular data)
         if (hasData) {
             html += `
                 <div class="table-responsive">
                     <table class="data-table" id="table-${uniqueVisId}">
                         <thead>
                             <tr>
-                                ${data.columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}
+                                ${data.columns.map(c => `<th>${escapeHtml(getCleanColumnName(c))}</th>`).join('')}
                             </tr>
                         </thead>
                         <tbody>
                             ${data.rows.map(row => `
                                 <tr>
-                                    ${row.map(cell => `<td>${escapeHtml(String(cell))}</td>`).join('')}
+                                    ${row.map((cell, idx) => `<td>${formatTableCell(cell, data.columns[idx])}</td>`).join('')}
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -686,7 +715,7 @@ function renderAgentResponse(data, timeStr = null) {
     }
 
     // Render Chart if applicable
-    if (canChart) {
+    if (canChart && chartMode === 'chart') {
         renderDynamicChart(`chart-${uniqueVisId}`, data.chart);
     }
 
@@ -702,6 +731,104 @@ function renderAgentResponse(data, timeStr = null) {
     if (window.lucide) lucide.createIcons();
 }
 
+function getCleanColumnName(colName) {
+    if (!colName) return '';
+    const col = String(colName).toLowerCase().trim();
+    const map = {
+        "user_id": "User ID",
+        "rider_id": "Rider ID",
+        "driver_id": "Driver ID",
+        "vehicle_id": "Vehicle ID",
+        "ride_id": "Ride ID",
+        "payment_id": "Payment ID",
+        "rating_id": "Rating ID",
+        "total_users": "Total Users",
+        "active_users": "Active Users",
+        "inactive_users": "Inactive Users",
+        "total_rides": "Total Rides",
+        "ride_count": "Ride Count",
+        "completed_rides": "Completed Rides",
+        "cancelled_rides": "Cancelled Rides",
+        "cancellation_rate": "Cancellation Rate (%)",
+        "percent_canceled_rainy": "Rainy Cancellation Rate (%)",
+        "percent_canceled_non_rainy": "Non-Rainy Cancellation Rate (%)",
+        "total_revenue": "Total Revenue",
+        "revenue": "Revenue",
+        "avg_fare": "Average Fare",
+        "fare": "Fare",
+        "amount": "Amount",
+        "total_amount": "Total Amount",
+        "surge_multiplier": "Surge Multiplier",
+        "avg_surge": "Average Surge Multiplier",
+        "avg_rating": "Average Rating",
+        "rating": "Rating",
+        "distance_km": "Distance (km)",
+        "avg_distance": "Average Distance (km)",
+        "payment_method": "Payment Method",
+        "payment_status": "Payment Status",
+        "vehicle_type": "Vehicle Type",
+        "user_type": "User Type",
+        "city": "City",
+        "status": "Ride Status",
+        "cancellation_reason": "Cancellation Reason",
+        "is_rainy": "Weather Condition",
+        "is_active": "Account Status",
+        "recorded_at": "Recorded At",
+        "requested_at": "Requested At",
+        "pickup_time": "Pickup Time",
+        "dropoff_time": "Dropoff Time",
+        "signup_date": "Signup Date",
+        "temperature_c": "Temperature (°C)",
+        "precipitation_mm": "Precipitation (mm)",
+        "rain_mm": "Rainfall (mm)",
+        "avg_rainfall_mm": "Average Rainfall (mm)",
+        "weather_code": "Weather Code"
+    };
+    if (map[col]) return map[col];
+    if (col.startsWith("is_")) return col.substring(3).replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()) + " Status";
+    if (col.endsWith("_count")) return col.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase());
+    if (col.endsWith("_rate")) return col.substring(0, col.length - 5).replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()) + " Rate (%)";
+    return col.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase());
+}
+
+function formatTableCell(val, colName) {
+    if (val === null || val === undefined) return '<span style="color: #6B7280;">NULL</span>';
+    const col = (colName || '').toLowerCase();
+    const strVal = String(val).trim();
+
+    // 1. Boolean check
+    if (typeof val === 'boolean' || strVal === 'true' || strVal === 'false') {
+        const isTrue = val === true || strVal === 'true';
+        if (col.includes('rain') || col.includes('weather')) {
+            return isTrue ? '<span style="color: #06B6D4;">🌧️ Rainy</span>' : '<span style="color: #9CA3AF;">☀️ Non-Rainy</span>';
+        } else if (col.includes('active')) {
+            return isTrue ? '<span style="color: #10B981;">🟢 Active</span>' : '<span style="color: #EF4444;">🔴 Inactive</span>';
+        }
+        return isTrue ? '<span style="color: #10B981;">Yes</span>' : '<span style="color: #9CA3AF;">No</span>';
+    }
+
+    // 2. Numeric formatting
+    const num = Number(val);
+    if (!isNaN(num) && typeof val !== 'boolean' && strVal !== '') {
+        if (col.includes('rate') || col.includes('percent') || col.includes('pct')) {
+            return `<span style="font-family: var(--font-mono); font-weight: 500;">${num.toFixed(2)}%</span>`;
+        } else if (col.includes('fare') || col.includes('revenue') || col.includes('amount') || col.includes('price')) {
+            return `<span style="font-family: var(--font-mono); color: #34D399;">₹${num.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>`;
+        } else if (col.includes('rating') || col.includes('score')) {
+            return `<span style="font-family: var(--font-mono); color: #FBBF24;">${num.toFixed(2)} ★</span>`;
+        } else if (col.includes('surge') || col.includes('multiplier')) {
+            return `<span style="font-family: var(--font-mono); color: #A78BFA;">${num.toFixed(2)}x</span>`;
+        } else if (Number.isInteger(num)) {
+            return `<span style="font-family: var(--font-mono);">${num.toLocaleString()}</span>`;
+        } else {
+            return `<span style="font-family: var(--font-mono);">${num.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>`;
+        }
+    }
+
+    // 3. Text fallback
+    return escapeHtml(strVal);
+}
+
 function renderDynamicChart(canvasId, chartConfig) {
     const ctx = document.getElementById(canvasId);
     if (!ctx) return;
@@ -710,20 +837,25 @@ function renderDynamicChart(canvasId, chartConfig) {
         activeChartInstances[canvasId].destroy();
     }
 
-    const colors = [
-        'rgba(16, 185, 129, 0.85)',
-        'rgba(6, 182, 212, 0.85)',
-        'rgba(139, 92, 246, 0.85)',
-        'rgba(245, 158, 11, 0.85)',
-        'rgba(239, 68, 68, 0.85)',
-        'rgba(59, 130, 246, 0.85)',
-        'rgba(236, 72, 153, 0.85)',
-        'rgba(168, 85, 247, 0.85)'
+    const palette = [
+        { bg: 'rgba(16, 185, 129, 0.75)', border: '#10B981' }, // Emerald
+        { bg: 'rgba(6, 182, 212, 0.75)', border: '#06B6D4' },  // Cyan
+        { bg: 'rgba(139, 92, 246, 0.75)', border: '#8B5CF6' }, // Violet
+        { bg: 'rgba(245, 158, 11, 0.75)', border: '#F59E0B' }, // Amber
+        { bg: 'rgba(239, 68, 68, 0.75)', border: '#EF4444' },  // Rose
+        { bg: 'rgba(59, 130, 246, 0.75)', border: '#3B82F6' }, // Blue
+        { bg: 'rgba(236, 72, 153, 0.75)', border: '#EC4899' }, // Pink
+        { bg: 'rgba(168, 85, 247, 0.75)', border: '#A855F7' }  // Purple
     ];
 
+    const chartType = chartConfig.type === 'grouped_bar' ? 'bar' : (chartConfig.type || 'bar');
     const isDoughnut = chartConfig.type === 'doughnut';
+    const isLine = chartConfig.type === 'line';
+    const isScatter = chartConfig.type === 'scatter';
+    const isRate = chartConfig.metric_type === 'rate';
+    const isCurrency = chartConfig.metric_type === 'currency';
 
-    // Format labels defensively on frontend
+    // Format display labels defensively
     const formattedLabels = (chartConfig.labels || []).map(lbl => {
         const s = String(lbl);
         if (s.toLowerCase() === 'true' || s.toLowerCase() === 'false') {
@@ -736,38 +868,132 @@ function renderDynamicChart(canvasId, chartConfig) {
         return s;
     });
 
+    // Build datasets
+    let chartDatasets = [];
+    if (chartConfig.datasets && chartConfig.datasets.length > 0) {
+        chartDatasets = chartConfig.datasets.map((ds, idx) => {
+            const color = palette[idx % palette.length];
+            if (isDoughnut) {
+                return {
+                    label: ds.label || chartConfig.title || 'Metric',
+                    data: ds.data || chartConfig.values || [],
+                    backgroundColor: palette.map(p => p.bg),
+                    borderColor: 'rgba(15, 23, 42, 0.9)',
+                    borderWidth: 2
+                };
+            } else if (isLine) {
+                return {
+                    label: ds.label || 'Metric',
+                    data: ds.data || [],
+                    borderColor: color.border,
+                    backgroundColor: color.bg.replace('0.75', '0.15'),
+                    borderWidth: 2.5,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    pointHoverRadius: 6,
+                    pointBackgroundColor: color.border
+                };
+            } else if (isScatter) {
+                return {
+                    label: ds.label || 'Points',
+                    data: ds.data || [],
+                    backgroundColor: color.bg,
+                    borderColor: color.border,
+                    pointRadius: 5,
+                    pointHoverRadius: 7
+                };
+            } else {
+                return {
+                    label: ds.label || chartConfig.title || 'Metric',
+                    data: ds.data || [],
+                    backgroundColor: color.bg,
+                    borderColor: color.border,
+                    borderWidth: 1.5,
+                    borderRadius: 6
+                };
+            }
+        });
+    } else {
+        const color = palette[0];
+        chartDatasets = [{
+            label: chartConfig.title || 'Metric',
+            data: chartConfig.values || [],
+            backgroundColor: isDoughnut ? palette.map(p => p.bg) : color.bg,
+            borderColor: isDoughnut ? 'rgba(15, 23, 42, 0.9)' : color.border,
+            borderWidth: 1.5,
+            borderRadius: 6
+        }];
+    }
+
+    const showLegend = isDoughnut || (chartDatasets.length > 1);
+
     activeChartInstances[canvasId] = new Chart(ctx, {
-        type: chartConfig.type || 'bar',
+        type: chartType,
         data: {
             labels: formattedLabels,
-            datasets: [{
-                label: chartConfig.title || 'Metric',
-                data: chartConfig.values || [],
-                backgroundColor: isDoughnut ? colors : 'rgba(16, 185, 129, 0.65)',
-                borderColor: isDoughnut ? 'rgba(0,0,0,0.5)' : '#10B981',
-                borderWidth: 1.5,
-                borderRadius: 6
-            }]
+            datasets: chartDatasets
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
                 legend: {
-                    display: isDoughnut,
-                    labels: { color: '#D1D5DB', font: { family: 'Inter', size: 11 } }
+                    display: showLegend,
+                    position: 'top',
+                    labels: { color: '#D1D5DB', font: { family: 'Inter', size: 11 }, usePointStyle: true, boxWidth: 8 }
                 },
                 title: {
                     display: true,
                     text: chartConfig.title,
                     color: '#F9FAFB',
-                    font: { family: 'Outfit', size: 13, weight: '600' }
+                    font: { family: 'Outfit', size: 13, weight: '600' },
+                    padding: { bottom: 12 }
                 },
                 tooltip: {
+                    backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                    borderColor: 'rgba(255, 255, 255, 0.15)',
+                    borderWidth: 1,
+                    titleColor: '#F9FAFB',
+                    titleFont: { family: 'Outfit', size: 12, weight: '600' },
+                    bodyColor: '#E5E7EB',
+                    bodyFont: { family: 'Inter', size: 11 },
+                    padding: 10,
+                    cornerRadius: 8,
                     callbacks: {
+                        title: function(items) {
+                            if (!items.length) return '';
+                            return items[0].label || '';
+                        },
+                        afterBody: function(items) {
+                            if (!items.length || !chartConfig.raw_records) return [];
+                            const idx = items[0].dataIndex;
+                            const rec = chartConfig.raw_records[idx];
+                            if (!rec) return [];
+                            const lines = [];
+                            for (const [key, val] of Object.entries(rec)) {
+                                if (val === null || val === undefined) continue;
+                                const cleanKey = getCleanColumnName(key);
+                                let formattedVal = val;
+                                if (typeof val === 'number') {
+                                    if (key.includes('rate') || key.includes('percent')) {
+                                        formattedVal = `${val.toFixed(2)}%`;
+                                    } else if (key.includes('fare') || key.includes('revenue') || key.includes('amount')) {
+                                        formattedVal = `₹${val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                                    } else {
+                                        formattedVal = val.toLocaleString();
+                                    }
+                                }
+                                lines.push(`${cleanKey}: ${formattedVal}`);
+                            }
+                            return lines;
+                        },
                         label: function(context) {
+                            if (chartConfig.raw_records && chartConfig.raw_records.length) return '';
                             const val = context.parsed.y !== undefined ? context.parsed.y : context.parsed;
-                            return ` ${context.label}: ${Number(val).toLocaleString()}`;
+                            if (isRate) return ` ${context.dataset.label || 'Rate'}: ${Number(val).toFixed(2)}%`;
+                            if (isCurrency) return ` ${context.dataset.label || 'Amount'}: ₹${Number(val).toLocaleString()}`;
+                            return ` ${context.dataset.label || 'Value'}: ${Number(val).toLocaleString()}`;
                         }
                     }
                 }
@@ -778,7 +1004,15 @@ function renderDynamicChart(canvasId, chartConfig) {
                     grid: { color: 'rgba(255, 255, 255, 0.05)' }
                 },
                 y: {
-                    ticks: { color: '#9CA3AF', font: { family: 'Inter', size: 11 } },
+                    ticks: {
+                        color: '#9CA3AF',
+                        font: { family: 'Inter', size: 11 },
+                        callback: function(value) {
+                            if (isRate) return value + '%';
+                            if (isCurrency) return '₹' + Number(value).toLocaleString();
+                            return Number(value).toLocaleString();
+                        }
+                    },
                     grid: { color: 'rgba(255, 255, 255, 0.05)' },
                     beginAtZero: true
                 }
