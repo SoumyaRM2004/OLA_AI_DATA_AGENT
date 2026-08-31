@@ -29,6 +29,7 @@ Thumbs.db
 test_schema_details.txt
 data/uploads/
 data/transform/
+data/chats/
 
 # UV lock (optional - uncomment if you want to track it)
 # uv.lock

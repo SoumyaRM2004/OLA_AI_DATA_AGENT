@@ -146,9 +146,12 @@ You are a question-curation assistant for an SQL data analyst in an OLA-inspired
 
 Rewrite the user's question into a clear, precise analytical question for querying a PostgreSQL database containing rides, drivers, vehicles, payments, ratings, and weather data.
 
-Do not answer the question.
-Do not write SQL.
-Return ONLY the refined, standalone question.
+IMPORTANT ENTITY & SCOPE RULES:
+1. "Users" without qualification refers to ALL users in the users table (total users count). Do NOT restrict "users" to only riders or only drivers unless explicitly asked (e.g. "how many riders", "how many drivers").
+2. "Now", "currently", "at this moment", or "how many users are there now?" refers to querying the CURRENT live PostgreSQL database state.
+3. Do not answer the question.
+4. Do not write SQL.
+5. Return ONLY the refined, standalone question.
 
 User Question:
 {user_question}
@@ -179,6 +182,15 @@ def prompt_query_context(state: AgentSchema) -> AgentSchema:
 You are an expert SQL Data Analyst Agent for a PostgreSQL database in an OLA-inspired mobility platform.
 
 Your task is to analyze the user question against the provided database schema and determine if it can be answered.
+
+IMPORTANT DATABASE STATE & AUTHORITY RULES:
+- PostgreSQL is the single authoritative source of truth. The database state is dynamic and may have been updated recently via CSV data imports (Upsert, Append, Replace).
+- Always generate a fresh SQL query against PostgreSQL to retrieve current database facts and metrics.
+- For general user count ("how many users", "total users", "users count", "how many users now"), generate `SELECT COUNT(*) FROM public.users;`. Only filter by `user_type = 'rider'` or `user_type = 'driver'` when explicitly asked for riders or drivers.
+- For total rides: `SELECT COUNT(*) FROM public.rides;`.
+- For total vehicles: `SELECT COUNT(*) FROM public.vehicles;`.
+- For total payments: `SELECT COUNT(*) FROM public.payments;`.
+- For total ratings: `SELECT COUNT(*) FROM public.ratings;`.
 
 DATABASE SCHEMA:
 {schema_info}
@@ -400,6 +412,159 @@ def canceled_sql(state: AgentSchema) -> AgentSchema:
 # 8. EXECUTE SQL (STRUCTURED FOR CHARTS & TABLES)
 # ============================================================
 
+# ============================================================
+# 8. EXECUTE SQL & DIAGNOSTIC COVERAGE ANALYZER
+# ============================================================
+
+def diagnose_query_coverage(sql_query: str, db: DatabaseConnection) -> Dict[str, Any]:
+    """
+    Analyzes dataset coverage and overlap when queries involve joins (especially rides and weather_data)
+    or when queries return zero rows.
+    
+    Distinguishes:
+    - NO_OVERLAP: rides and weather records exist, but there is 0 city/hour overlap
+    - PARTIAL_OVERLAP: some rides match hourly weather observations, some do not
+    - FULL_OVERLAP: all scoped rides have matching weather observations
+    - EMPTY_RIDES: rides table is empty
+    - EMPTY_WEATHER: weather_data table is empty
+    - NO_FILTER_MATCH: non-weather query where table has rows but filter matched 0 rows
+    """
+    sql_l = sql_query.lower()
+    is_weather_query = "weather_data" in sql_l or "weather" in sql_l
+    is_rides_query = "rides" in sql_l or "ride" in sql_l
+    is_users_query = "users" in sql_l or "user" in sql_l
+
+    diagnostics: Dict[str, Any] = {
+        "is_weather_rides_join": False,
+        "overlap_status": "NORMAL",
+        "total_rides": 0,
+        "total_weather_records": 0,
+        "scoped_rides": 0,
+        "matched_rides": 0,
+        "unmatched_rides": 0,
+        "min_ride_time": None,
+        "max_ride_time": None,
+        "min_weather_time": None,
+        "max_weather_time": None,
+        "city_filter": None,
+        "explanation": ""
+    }
+
+    try:
+        if is_weather_query and (is_rides_query or is_users_query):
+            diagnostics["is_weather_rides_join"] = True
+
+            # Detect city filter if present
+            cities = ["Calgary", "Edmonton", "Halifax", "Montreal", "Ottawa", "Toronto", "Vancouver", "Winnipeg"]
+            filtered_city = None
+            for c in cities:
+                if f"'{c.lower()}'" in sql_l or f"'%{c.lower()}%'" in sql_l or f"\"{c.lower()}\"" in sql_l or f" {c.lower()} " in sql_l:
+                    filtered_city = c
+                    break
+            diagnostics["city_filter"] = filtered_city
+
+            city_where = f"WHERE u.city ILIKE '%{filtered_city}%'" if filtered_city else ""
+            weather_city_where = f"WHERE city ILIKE '%{filtered_city}%'" if filtered_city else ""
+
+            diag_sql = f"""
+                SELECT 
+                    (SELECT COUNT(*) FROM public.rides) AS total_rides,
+                    (SELECT COUNT(*) FROM public.weather_data {weather_city_where}) AS total_weather,
+                    (SELECT MIN(requested_at) FROM public.rides) AS min_ride_time,
+                    (SELECT MAX(requested_at) FROM public.rides) AS max_ride_time,
+                    (SELECT MIN(recorded_at) FROM public.weather_data {weather_city_where}) AS min_weather_time,
+                    (SELECT MAX(recorded_at) FROM public.weather_data {weather_city_where}) AS max_weather_time,
+                    COUNT(r.ride_id) AS scoped_rides,
+                    COUNT(w.recorded_at) AS matched_rides,
+                    COUNT(r.ride_id) - COUNT(w.recorded_at) AS unmatched_rides
+                FROM public.rides r
+                JOIN public.users u ON r.rider_id = u.user_id
+                LEFT JOIN public.weather_data w 
+                    ON u.city = w.city 
+                   AND DATE_TRUNC('hour', r.requested_at) = w.recorded_at
+                {city_where};
+            """
+
+            res = db.execute_query_structured(diag_sql)
+            if res["records"]:
+                rec = res["records"][0]
+                total_rides = int(rec.get("total_rides") or 0)
+                total_weather = int(rec.get("total_weather") or 0)
+                scoped_rides = int(rec.get("scoped_rides") or 0)
+                matched_rides = int(rec.get("matched_rides") or 0)
+                unmatched_rides = int(rec.get("unmatched_rides") or 0)
+
+                min_ride = rec.get("min_ride_time")
+                max_ride = rec.get("max_ride_time")
+                min_weather = rec.get("min_weather_time")
+                max_weather = rec.get("max_weather_time")
+
+                diagnostics["total_rides"] = total_rides
+                diagnostics["total_weather_records"] = total_weather
+                diagnostics["scoped_rides"] = scoped_rides
+                diagnostics["matched_rides"] = matched_rides
+                diagnostics["unmatched_rides"] = unmatched_rides
+                diagnostics["min_ride_time"] = str(min_ride) if min_ride else "N/A"
+                diagnostics["max_ride_time"] = str(max_ride) if max_ride else "N/A"
+                diagnostics["min_weather_time"] = str(min_weather) if min_weather else "N/A"
+                diagnostics["max_weather_time"] = str(max_weather) if max_weather else "N/A"
+
+                min_r_str = diagnostics["min_ride_time"][:10]
+                max_r_str = diagnostics["max_ride_time"][:10]
+                min_w_str = diagnostics["min_weather_time"][:10]
+                max_w_str = diagnostics["max_weather_time"][:10]
+
+                if total_rides == 0:
+                    diagnostics["overlap_status"] = "EMPTY_RIDES"
+                    diagnostics["explanation"] = "No comparable rides were found because the public.rides table is currently empty in the database."
+                elif total_weather == 0:
+                    diagnostics["overlap_status"] = "EMPTY_WEATHER"
+                    diagnostics["explanation"] = "No comparable weather observations were found because the public.weather_data table is currently empty in the database."
+                elif matched_rides == 0:
+                    diagnostics["overlap_status"] = "NO_OVERLAP"
+                    scope_info = f" in {filtered_city}" if filtered_city else ""
+                    diagnostics["explanation"] = (
+                        f"No comparable rides were found{scope_info} because the available weather data does not overlap the ride timestamps/cities.\n\n"
+                        f"**Dataset Coverage:**\n"
+                        f"- **Rides in database**: {scoped_rides:,} records spanning {min_r_str} to {max_r_str}.\n"
+                        f"- **Weather observations**: {total_weather:,} hourly observations covering {min_w_str} to {max_w_str} across 8 Canadian cities.\n\n"
+                        f"Because the ride timestamps fall outside the available weather observation window, a comparison between rainy and non-rainy periods cannot be computed for these records."
+                    )
+                elif matched_rides < scoped_rides:
+                    diagnostics["overlap_status"] = "PARTIAL_OVERLAP"
+                    diagnostics["explanation"] = (
+                        f"Partial weather overlap detected: {matched_rides:,} of {scoped_rides:,} rides have corresponding hourly weather observations. "
+                        f"{unmatched_rides:,} rides have no matching weather data and are excluded from the comparison."
+                    )
+                else:
+                    diagnostics["overlap_status"] = "FULL_OVERLAP"
+                    diagnostics["explanation"] = f"Full weather overlap: all {matched_rides:,} rides have matching hourly weather observations."
+
+        else:
+            # Check non-weather empty queries
+            tables = ["users", "rides", "vehicles", "payments", "ratings", "weather_data"]
+            matched_table = None
+            for tbl in tables:
+                if f"public.{tbl}" in sql_l or f" {tbl} " in sql_l or f" {tbl}," in sql_l:
+                    matched_table = tbl
+                    break
+
+            if matched_table:
+                count_res = db.execute_query_structured(f"SELECT COUNT(*) AS total FROM public.{matched_table};")
+                if count_res["records"]:
+                    tbl_count = int(count_res["records"][0].get("total") or 0)
+                    if tbl_count == 0:
+                        diagnostics["overlap_status"] = "EMPTY_TABLE"
+                        diagnostics["explanation"] = f"The public.{matched_table} table is currently empty in the database."
+                    else:
+                        diagnostics["overlap_status"] = "NO_FILTER_MATCH"
+                        diagnostics["explanation"] = f"No records in public.{matched_table} matched the specific filter criteria (the table contains {tbl_count:,} total records)."
+    except Exception as e:
+        print(f"Error analyzing query diagnostics: {e}")
+
+    return diagnostics
+
+
 def execute_sql(state: AgentSchema) -> AgentSchema:
     sql_query = state.generated_sql_query
     db = DatabaseConnection()
@@ -423,16 +588,53 @@ def execute_sql(state: AgentSchema) -> AgentSchema:
 def represent_final_answer(state: AgentSchema) -> AgentSchema:
     execution_result = state.sql_query_execution_result
     curated_question = state.curated_ques
+    sql_query = state.generated_sql_query
+    db = DatabaseConnection()
 
     if state.error:
         state.final_answer = f"Error executing query: {state.error}"
         state.messages = state.messages + [AIMessage(content=state.final_answer)]
         return state
 
-    if not state.data_rows:
-        state.final_answer = f"No records found in the database matching the criteria for '{curated_question}'."
+    # Perform diagnostic analysis on coverage and joins
+    diag = diagnose_query_coverage(sql_query, db)
+
+    # 1. Handle No-Overlap scenario (INNER JOIN produced zero rows due to date/city mismatch)
+    if diag["is_weather_rides_join"] and diag["overlap_status"] == "NO_OVERLAP":
+        state.final_answer = diag["explanation"]
         state.messages = state.messages + [AIMessage(content=state.final_answer)]
         return state
+
+    # 2. Handle empty source tables
+    if diag["overlap_status"] in ("EMPTY_RIDES", "EMPTY_WEATHER", "EMPTY_TABLE"):
+        state.final_answer = diag["explanation"]
+        state.messages = state.messages + [AIMessage(content=state.final_answer)]
+        return state
+
+    # 3. Handle zero rows returned on non-weather query
+    if not state.data_rows:
+        if diag["explanation"]:
+            state.final_answer = f"{diag['explanation']} for query '{curated_question}'."
+        else:
+            state.final_answer = f"No records found in the database matching the criteria for '{curated_question}'."
+        state.messages = state.messages + [AIMessage(content=state.final_answer)]
+        return state
+
+    # Build coverage instruction for LLM synthesis
+    coverage_context = ""
+    if diag["is_weather_rides_join"] and diag["overlap_status"] == "PARTIAL_OVERLAP":
+        coverage_context = f"""
+DIAGNOSTIC DATA COVERAGE (PARTIAL OVERLAP):
+- Total rides in database: {diag['scoped_rides']:,}
+- Rides with matching hourly weather observations: {diag['matched_rides']:,}
+- Rides without weather observations (excluded): {diag['unmatched_rides']:,}
+- Weather observation window: {diag['min_weather_time'][:10]} to {diag['max_weather_time'][:10]}
+
+CRITICAL PARTIAL OVERLAP RULES:
+1. Explicitly state that this analysis is based on the {diag['matched_rides']:,} rides with matching weather observations (out of {diag['scoped_rides']:,} total rides).
+2. Report that {diag['unmatched_rides']:,} rides had no matching weather observations in the dataset and were excluded from this weather comparison.
+3. NEVER classify rides with no weather observation as non-rainy or false. Unmatched rides are strictly excluded.
+"""
 
     llm = pick_llm("low")
 
@@ -440,27 +642,33 @@ def represent_final_answer(state: AgentSchema) -> AgentSchema:
 You are an SQL Data Analyst assistant for an OLA-inspired mobility platform.
 
 The user asked: "{curated_question}"
+SQL Query Executed: {sql_query}
 Database returned: {execution_result}
+{coverage_context}
 
 Your task is to present this data in a clear, well-structured, natural language response following strict analytical precision rules:
 
 ANALYTICAL INTERPRETATION RULES:
-1. DISTINGUISH SUBGROUP HIGHESTS FROM COMPARISONS:
+1. FACTUAL DATA ACCURACY (POSTGRESQL AUTHORITY):
+   - PostgreSQL is the single authoritative source of truth. Always report the exact numbers, metrics, and counts returned by the database execution result above.
+   - For direct count questions (e.g. "How many users are there?", "How many users are in the database now?"), state the current number clearly and directly (e.g. "There are currently 10,020 users registered in the database.").
+   - Never assume static numbers or rely on prior conversational assumptions for factual counts.
+2. WEATHER AND RIDE ANALYSIS & COVERAGE:
+   - If partial weather coverage is indicated, explicitly state that results are based on the matched rides (e.g., "Based on 1,057 rides with matching weather observations out of 20,000 total rides...").
+   - A ride without a weather observation must NEVER be classified as false or non-rainy. Unmatched rides must strictly remain excluded.
+3. DISTINGUISH SUBGROUP HIGHESTS FROM COMPARISONS:
    - Distinguish "highest cancellation rate among rainy rides" from "rain is associated with a higher cancellation rate".
    - If the query only analyzes rainy rides (e.g. across 8 cities), state:
      "Among the eight cities, Ottawa had the highest observed cancellation rate for rainy rides in January 2025: 21.43% (3 cancellations out of 14 rainy rides)."
    - Do NOT claim that rainy weather is associated with higher cancellations unless the query explicitly compares rainy AND non-rainy cancellation rates for the same city/scope.
-2. ALWAYS INCLUDE SAMPLE SIZES:
+4. ALWAYS INCLUDE SAMPLE SIZES:
    - When reporting a rate or percentage, always mention the numerator and denominator:
      e.g., "21.43% based on 14 rainy rides and 3 cancellations."
-3. DO NOT CLAIM STATISTICAL SIGNIFICANCE:
+5. DO NOT CLAIM STATISTICAL SIGNIFICANCE:
    - Do not call a small sample statistically significant unless a formal statistical hypothesis test (e.g., p-value) has actually been performed.
-4. STRICT NON-CAUSAL LANGUAGE:
+6. STRICT NON-CAUSAL LANGUAGE:
    - Express results purely in terms of observed numbers and correlations (e.g., "During the observed period...", "coincided with..."). NEVER state that rain *causes* cancellations, surge pricing, or higher fares.
-5. GEOGRAPHIC AND TEMPORAL COVERAGE:
-   - State the exact date ranges and distinct cities for weather_data and rides from the query result.
-   - Base overlap conclusions STRICTLY on the returned data: weather data is available for January 2025 across all 8 cities (Calgary, Edmonton, Halifax, Montreal, Ottawa, Toronto, Vancouver, Winnipeg). The rides dataset spans January 2025 to July 2026 across all 8 cities. Explain that meaningful ride/weather joins can be performed across all 8 cities for the January 2025 observation window.
-6. FORMATTING:
+7. FORMATTING:
    - Format multi-row results neatly with markdown tables or bullet points.
 
 Provide a concise, professional, and helpful answer:

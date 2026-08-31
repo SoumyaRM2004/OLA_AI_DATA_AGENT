@@ -1563,6 +1563,10 @@ def validate_csv_content(
                                     suggested_action="Use 'Upsert' mode to update existing records, or remove duplicate PKs."
                                 )
                                 structured_errors.append(err.to_dict())
+                            elif import_mode == "replace":
+                                warnings.append(
+                                    f"{len(existing_pks)} existing record(s) in {target_table} will be cleared and replaced with uploaded dataset (Replace mode)."
+                                )
                             else:
                                 warnings.append(
                                     f"{len(existing_pks)} record(s) already exist in {target_table} and will be updated (Upsert mode)."
