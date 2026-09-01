@@ -21,7 +21,7 @@ DB_CONFIG = {
     "password": os.environ["password"],
 }
 
-CSV_DIR = "data/sample" if os.path.exists("data/sample/users.csv") else "data"
+CSV_DIR = "data"
 
 
 # ============================================================
