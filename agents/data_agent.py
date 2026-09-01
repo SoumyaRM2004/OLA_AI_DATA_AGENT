@@ -325,8 +325,9 @@ def format_metric_value(raw_val: Any, metric_type: str) -> str:
         if metric_type == "rank":
             return f"{int(val_f)}"
         elif metric_type == "rate":
-            # If 0.5 was returned representing 50%, format as 50.00% if < 1.0, otherwise 50.00%
-            if 0 < val_f <= 1.0 and val_f != 1:
+            # If fractional ratio <= 1.0 (e.g. 0.1605, 0.05, 1.0), scale to percentage (16.05%, 5.00%, 100.00%)
+            # If already percentage-scaled (> 1.0, e.g. 16.05, 50.0, 100.0), preserve existing value
+            if 0.0 < val_f <= 1.0:
                 val_f = val_f * 100.0
             return f"{val_f:.2f}%"
         elif metric_type == "currency":
@@ -439,12 +440,30 @@ def auto_detect_chart(columns: List[str], records: List[Dict[str, Any]]) -> Dict
 
         datasets = []
         for n_col in numeric_cols[:3]:
-            vals = [float(r.get(n_col) or 0) if r.get(n_col) is not None else 0.0 for r in records]
+            m_type = col_profiles[n_col]["metric_type"]
+            col_raw_vals = [r.get(n_col) for r in records if r.get(n_col) is not None]
+            col_numeric_vals = [float(v) for v in col_raw_vals if is_numeric_val(v)]
+            is_frac = m_type == "rate" and len(col_numeric_vals) > 0 and all(0.0 <= v <= 1.0 for v in col_numeric_vals)
+
+            vals = []
+            for r in records:
+                v = r.get(n_col)
+                if v is None:
+                    vals.append(0.0)
+                else:
+                    try:
+                        vf = float(v)
+                        if is_frac and 0.0 < vf <= 1.0:
+                            vf = round(vf * 100.0, 4)
+                        vals.append(vf)
+                    except (ValueError, TypeError):
+                        vals.append(0.0)
+
             datasets.append({
                 "label": clean_column_name(n_col),
                 "column": n_col,
                 "data": vals,
-                "metric_type": col_profiles[n_col]["metric_type"]
+                "metric_type": m_type
             })
 
         title = "Rides Over Time" if any("ride" in c.lower() for c in numeric_cols) else f"{clean_column_name(numeric_cols[0])} Over Time"
@@ -476,7 +495,24 @@ def auto_detect_chart(columns: List[str], records: List[Dict[str, Any]]) -> Dict
         # 1. Category + Rate/Percentage with Supporting Metrics
         if rate_cols:
             primary_rate_col = rate_cols[0]
-            values = [float(r.get(primary_rate_col) or 0) if r.get(primary_rate_col) is not None else 0.0 for r in records]
+            raw_vals = [r.get(primary_rate_col) for r in records if r.get(primary_rate_col) is not None]
+            numeric_vals = [float(v) for v in raw_vals if is_numeric_val(v)]
+            is_fractional = len(numeric_vals) > 0 and all(0.0 <= v <= 1.0 for v in numeric_vals)
+
+            values = []
+            for r in records:
+                v = r.get(primary_rate_col)
+                if v is None:
+                    values.append(0.0)
+                else:
+                    try:
+                        vf = float(v)
+                        if is_fractional and 0.0 < vf <= 1.0:
+                            vf = round(vf * 100.0, 4)
+                        values.append(vf)
+                    except (ValueError, TypeError):
+                        values.append(0.0)
+
             title = f"{clean_column_name(primary_rate_col)} by {clean_column_name(category_col)}"
             return {
                 "can_chart": True,

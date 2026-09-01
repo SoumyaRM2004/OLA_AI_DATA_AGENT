@@ -28,6 +28,105 @@ DISALLOWED_KEYWORDS = [
     r"\bVACUUM\b", r"\bREINDEX\b"
 ]
 
+
+def find_top_level_clause(sql: str, keyword: str) -> int:
+    """Finds the index of a top-level SQL keyword (outside parentheses and string literals)."""
+    depth = 0
+    in_str = False
+    kw_len = len(keyword)
+    sql_upper = sql.upper()
+    kw_upper = keyword.upper()
+
+    for i in range(len(sql)):
+        ch = sql[i]
+        if ch == "'":
+            in_str = not in_str
+        elif not in_str:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth = max(0, depth - 1)
+            elif depth == 0:
+                if sql_upper[i:i + kw_len] == kw_upper:
+                    before_ok = (i == 0 or (not sql[i - 1].isalnum() and sql[i - 1] != '_'))
+                    after_ok = (i + kw_len >= len(sql) or (not sql[i + kw_len].isalnum() and sql[i + kw_len] != '_'))
+                    if before_ok and after_ok:
+                        return i
+    return -1
+
+
+def sanitize_group_by_sql(sql: str) -> str:
+    """
+    Ensures SQL queries with date truncation or temporal grouping are PostgreSQL-valid.
+    Fixes cases where DATE_TRUNC is in SELECT but GROUP BY uses alias or partial extract (year, month).
+    """
+    if not sql or not isinstance(sql, str):
+        return sql
+
+    cleaned = sql.strip()
+
+    # Find all DATE_TRUNC expressions
+    date_trunc_matches = list(re.finditer(r"DATE_TRUNC\s*\(\s*'(\w+)'\s*,\s*([a-zA-Z0-9_\.]+)\s*\)", cleaned, re.IGNORECASE))
+    if not date_trunc_matches:
+        return cleaned
+
+    group_by_idx = find_top_level_clause(cleaned, "GROUP BY")
+    if group_by_idx == -1:
+        return cleaned
+
+    gb_start = group_by_idx + len("GROUP BY")
+    next_clause_indices = []
+    for next_kw in ["HAVING", "ORDER BY", "LIMIT"]:
+        idx = find_top_level_clause(cleaned[gb_start:], next_kw)
+        if idx != -1:
+            next_clause_indices.append(gb_start + idx)
+
+    gb_end = min(next_clause_indices) if next_clause_indices else (len(cleaned) - 1 if cleaned.endswith(";") else len(cleaned))
+    group_by_clause = cleaned[gb_start:gb_end].strip()
+
+    for m in date_trunc_matches:
+        col = m.group(2)
+        full_expr = m.group(0)
+
+        full_expr_norm = re.sub(r"\s+", "", full_expr.lower())
+        gb_norm = re.sub(r"\s+", "", group_by_clause.lower())
+        col_norm = re.sub(r"\s+", "", col.lower())
+
+        if full_expr_norm not in gb_norm and col_norm not in gb_norm:
+            # Replace invalid temporal aliases or EXTRACT expressions in GROUP BY
+            items = [it.strip() for it in group_by_clause.split(",")]
+            new_items = []
+            replaced = False
+            for it in items:
+                it_l = it.lower().strip()
+                if it_l in ("year", "month", "day", "hour", "week", "quarter", "month_start", "date") or "extract(" in it_l:
+                    if not replaced:
+                        new_items.append(full_expr)
+                        replaced = True
+                else:
+                    new_items.append(it)
+            if not replaced:
+                new_items.append(full_expr)
+            new_gb = " " + ", ".join(new_items) + " "
+
+            # Reconstruct SQL with new GROUP BY
+            cleaned = cleaned[:gb_start] + new_gb + cleaned[gb_end:]
+
+            # Re-locate from_idx and fix unaggregated raw column inside EXTRACT in SELECT
+            from_idx = find_top_level_clause(cleaned, "FROM")
+            if from_idx != -1:
+                select_portion = cleaned[:from_idx]
+                pattern = re.compile(
+                    r"\bEXTRACT\s*\(\s*(YEAR|MONTH|DAY|HOUR|QUARTER|WEEK)\s+FROM\s+" + re.escape(col) + r"\s*\)",
+                    re.IGNORECASE
+                )
+                fixed_select = pattern.sub(lambda match: f"EXTRACT({match.group(1)} FROM {full_expr})", select_portion)
+                if fixed_select != select_portion:
+                    cleaned = fixed_select + cleaned[from_idx:]
+
+    return cleaned.strip()
+
+
 def validate_sql_deterministic(raw_sql: str) -> Tuple[bool, str, str]:
     """
     Deterministically validates a generated SQL query before sending to Security Judge or PostgreSQL.
@@ -98,8 +197,11 @@ def validate_sql_deterministic(raw_sql: str) -> Tuple[bool, str, str]:
     if semicolon_outside_quotes:
         return False, "", "Multiple SQL statements detected (chained queries not allowed)."
 
+    # 10. Automatically sanitize & normalize GROUP BY expressions (e.g. DATE_TRUNC temporal grouping)
+    sanitized_body = sanitize_group_by_sql(cleaned_body)
+
     # Clean, single-statement SQL with terminating semicolon
-    final_sql = cleaned_body + ";"
+    final_sql = sanitized_body.rstrip(";").strip() + ";"
     return True, final_sql, ""
 
 
@@ -230,7 +332,13 @@ CRITICAL SCHEMA LIMITATION RULES:
      (or date match: `u.city = w.city AND rides.requested_at::date = w.recorded_at::date`).
    - COMPARATIVE WEATHER QUERIES: If the user asks whether rain increases, decreases, or is associated with cancellations, fares, or surge in a city (e.g. Ottawa) or overall, generate a query comparing BOTH rainy and non-rainy conditions (e.g. `w.is_rainy`, ride count, cancellations, cancellation rate) so a direct, valid comparison can be made:
      `SELECT u.city, w.is_rainy, COUNT(r.ride_id) AS total_rides, SUM(CASE WHEN r.status = 'cancelled' THEN 1 ELSE 0 END) AS cancellations, ROUND(SUM(CASE WHEN r.status = 'cancelled' THEN 1 ELSE 0 END) * 100.0 / COUNT(r.ride_id), 2) AS cancellation_rate FROM public.rides r JOIN public.users u ON r.rider_id = u.user_id JOIN public.weather_data w ON u.city = w.city AND DATE_TRUNC('hour', r.requested_at) = w.recorded_at WHERE u.city ILIKE 'Ottawa' GROUP BY u.city, w.is_rainy;`
-   - When comparing coverage between weather_data and rides: aggregate min/max timestamps, distinct cities, and record counts from both tables.
+   - POSTGRESQL TEMPORAL & DATE-TRUNCATION GROUP BY RULES:
+     * When grouping or aggregating by time periods (monthly, daily, hourly, weekly):
+       - ALWAYS group by the single `DATE_TRUNC` expression directly:
+         `SELECT DATE_TRUNC('month', requested_at) AS month_start, COUNT(*) AS total_rides, SUM(fare) AS total_revenue FROM public.rides GROUP BY DATE_TRUNC('month', requested_at) ORDER BY month_start;`
+       - If separate year and month columns are needed, derive them from `month_start` in a CTE / outer query, OR use `EXTRACT(YEAR FROM DATE_TRUNC('month', requested_at))` with `GROUP BY DATE_TRUNC('month', requested_at)`:
+         `WITH monthly_summary AS (SELECT DATE_TRUNC('month', requested_at) AS month_start, COUNT(*) AS total_rides, SUM(fare) AS total_revenue FROM public.rides GROUP BY DATE_TRUNC('month', requested_at)) SELECT month_start, EXTRACT(YEAR FROM month_start)::int AS year, EXTRACT(MONTH FROM month_start)::int AS month, total_rides, total_revenue FROM monthly_summary ORDER BY month_start;`
+       - STRICT POSTGRESQL RULE: NEVER write `DATE_TRUNC('month', requested_at) AS month_start, EXTRACT(YEAR FROM requested_at) ... GROUP BY year, month`. In PostgreSQL, every non-aggregated column or expression in SELECT must appear in the GROUP BY clause.
    - RESULT LIMITING RULES (Context-Aware):
      * If the user specifically asks for top/bottom/first N rows (e.g., 'top 5', 'first 10', 'city with highest rainfall'), add LIMIT N.
      * For group-by aggregations (e.g., by date, by status, by city across all 8 cities, by payment method, coverage comparisons), do NOT arbitrarily add LIMIT 10 so the full aggregated dataset is available.
@@ -565,11 +673,144 @@ def diagnose_query_coverage(sql_query: str, db: DatabaseConnection) -> Dict[str,
     return diagnostics
 
 
+def diagnose_empty_result(sql_query: str, curated_question: str, db: DatabaseConnection) -> Dict[str, Any]:
+    """
+    Runs lightweight diagnostic queries when an analytical query returns 0 rows.
+    Determines whether a requested filter/threshold (e.g. >= 20 completed rides) is impossible
+    and provides factual supporting evidence (e.g. actual max completed rides in the database)
+    without relaxing the threshold or fabricating results.
+    """
+    diag = {
+        "has_diagnostic": False,
+        "type": "NONE",
+        "explanation": ""
+    }
+    if not sql_query:
+        return diag
+
+    sql_clean = sql_query.strip().rstrip(";")
+
+    # 1. Check for HAVING clause threshold (e.g. HAVING COUNT(*) >= 20)
+    having_idx = find_top_level_clause(sql_clean, "HAVING")
+    if having_idx != -1:
+        having_start = having_idx + len("HAVING")
+        next_indices = []
+        for kw in ["ORDER BY", "LIMIT"]:
+            idx = find_top_level_clause(sql_clean[having_start:], kw)
+            if idx != -1:
+                next_indices.append(having_start + idx)
+        having_end = min(next_indices) if next_indices else len(sql_clean)
+        having_expr = sql_clean[having_start:having_end].strip()
+
+        # Base grouping query without HAVING, ORDER BY, LIMIT
+        base_query = sql_clean[:having_idx].strip()
+        
+        try:
+            # Check column count
+            sample_res = db.execute_query_structured(f"SELECT * FROM ({base_query}) AS sub LIMIT 1;")
+            num_cols = len(sample_res.get("columns", []))
+            metric_col_idx = num_cols if num_cols >= 1 else 2
+            
+            top_sql = f"SELECT * FROM ({base_query}) AS sub ORDER BY {metric_col_idx} DESC LIMIT 1;"
+            count_sql = f"SELECT COUNT(*) AS total_groups FROM ({base_query}) AS sub;"
+
+            res_top = db.execute_query_structured(top_sql)
+            res_cnt = db.execute_query_structured(count_sql)
+
+            if res_top.get("records") and res_cnt.get("records"):
+                top_rec = res_top["records"][0]
+                total_groups = int(res_cnt["records"][0].get("total_groups") or 0)
+
+                cols = res_top["columns"]
+                metric_col = cols[-1] if cols else "count"
+                max_val = top_rec.get(metric_col)
+
+                clean_metric_name = str(metric_col).replace("_", " ")
+                entity = "drivers" if "driver" in curated_question.lower() or "driver" in sql_clean.lower() else (
+                    "riders" if "rider" in curated_question.lower() or "rider" in sql_clean.lower() else (
+                        "users" if "user" in curated_question.lower() or "user" in sql_clean.lower() else "entities"
+                    )
+                )
+
+                diag["has_diagnostic"] = True
+                diag["type"] = "HAVING_THRESHOLD_EXCEEDED"
+                diag["max_value"] = max_val
+                diag["total_groups"] = total_groups
+                diag["metric_column"] = metric_col
+                diag["having_expr"] = having_expr
+
+                diag["explanation"] = (
+                    f"No {entity} in the database met the requested criterion (`{having_expr}`).\n\n"
+                    f"**Diagnostic Evidence:**\n"
+                    f"- Across all **{total_groups:,}** {entity} in the database with matching activity, "
+                    f"the maximum **{clean_metric_name}** achieved is **{max_val}**.\n"
+                    f"- Because no {entity} has reached the requested threshold (`{having_expr}`), zero rows were returned."
+                )
+                return diag
+        except Exception as e:
+            print(f"Error diagnosing HAVING empty result: {e}")
+
+    # 2. Check for WHERE clause numeric threshold (e.g. fare >= 5000, distance_km >= 500, rating >= 6)
+    where_idx = find_top_level_clause(sql_clean, "WHERE")
+    if where_idx != -1:
+        where_start = where_idx + len("WHERE")
+        next_indices = []
+        for kw in ["GROUP BY", "HAVING", "ORDER BY", "LIMIT"]:
+            idx = find_top_level_clause(sql_clean[where_start:], kw)
+            if idx != -1:
+                next_indices.append(where_start + idx)
+        where_end = min(next_indices) if next_indices else len(sql_clean)
+        where_expr = sql_clean[where_start:where_end].strip()
+
+        num_comp = re.search(r"([a-zA-Z0-9_\.]+)\s*(>=|>|<=|<|=)\s*([0-9\.]+)", where_expr)
+        if num_comp:
+            col_name = num_comp.group(1).split(".")[-1]
+            op = num_comp.group(2)
+            val = num_comp.group(3)
+
+            tables = ["rides", "users", "vehicles", "payments", "ratings", "weather_data"]
+            tbl = next((t for t in tables if f"public.{t}" in sql_clean.lower() or f" {t} " in sql_clean.lower()), None)
+            if tbl:
+                try:
+                    stats_sql = f"SELECT COUNT(*) AS total, MIN({col_name}) AS min_v, MAX({col_name}) AS max_v, ROUND(AVG({col_name}), 2) AS avg_v FROM public.{tbl} WHERE {col_name} IS NOT NULL;"
+                    stats_res = db.execute_query_structured(stats_sql)
+                    if stats_res.get("records"):
+                        s = stats_res["records"][0]
+                        total_cnt = int(s.get('total') or 0)
+                        max_v = s.get('max_v')
+                        min_v = s.get('min_v')
+                        avg_v = s.get('avg_v')
+                        
+                        diag["has_diagnostic"] = True
+                        diag["type"] = "WHERE_THRESHOLD_EXCEEDED"
+                        diag["explanation"] = (
+                            f"No records in `public.{tbl}` matched the filter `{where_expr}`.\n\n"
+                            f"**Diagnostic Evidence:**\n"
+                            f"- The table contains **{total_cnt:,}** total records.\n"
+                            f"- The range of `{col_name}` in the database is from **{min_v}** to **{max_v}** (average: **{avg_v}**).\n"
+                            f"- Because the maximum value recorded in the database is **{max_v}**, the condition `{col_name} {op} {val}` cannot be satisfied by any record."
+                        )
+                        return diag
+                except Exception as e:
+                    print(f"Error diagnosing WHERE numeric empty result: {e}")
+
+    return diag
+
+
 def execute_sql(state: AgentSchema) -> AgentSchema:
     sql_query = state.generated_sql_query
     db = DatabaseConnection()
 
     result_dict = db.execute_query_structured(sql_query)
+
+    # Self-healing: if PostgreSQL returned a GROUP BY error, sanitize and retry once
+    if result_dict.get("error") and "must appear in the GROUP BY clause" in str(result_dict.get("error")):
+        sanitized_sql = sanitize_group_by_sql(sql_query)
+        if sanitized_sql != sql_query:
+            retry_dict = db.execute_query_structured(sanitized_sql)
+            if not retry_dict.get("error"):
+                result_dict = retry_dict
+                state.generated_sql_query = sanitized_sql
 
     state.data_columns = result_dict.get("columns", [])
     state.data_rows = result_dict.get("rows", [])
@@ -613,7 +854,10 @@ def represent_final_answer(state: AgentSchema) -> AgentSchema:
 
     # 3. Handle zero rows returned on non-weather query
     if not state.data_rows:
-        if diag["explanation"]:
+        diag_empty = diagnose_empty_result(sql_query, curated_question, db)
+        if diag_empty.get("has_diagnostic") and diag_empty.get("explanation"):
+            state.final_answer = diag_empty["explanation"]
+        elif diag.get("explanation"):
             state.final_answer = f"{diag['explanation']} for query '{curated_question}'."
         else:
             state.final_answer = f"No records found in the database matching the criteria for '{curated_question}'."
