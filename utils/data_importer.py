@@ -10,7 +10,7 @@ from psycopg2 import sql
 from psycopg2.extras import execute_values
 import pandas as pd
 import numpy as np
-from utils.database import DatabaseConnection, get_db_config
+from utils.database import DatabaseConnection, get_db_config, get_session_schema_name, sanitize_session_id
 
 # ============================================================
 # 1. CANONICAL DATABASE SCHEMAS & METADATA
@@ -1590,10 +1590,12 @@ def validate_csv_content(
 # ============================================================
 
 def validate_batch_foreign_keys(
-    datasets: Dict[str, pd.DataFrame]
+    datasets: Dict[str, pd.DataFrame],
+    session_id: Optional[str] = None
 ) -> Tuple[bool, List[Dict[str, Any]], List[str]]:
     """
     Validates foreign key integrity across a batch of uploaded datasets and live PostgreSQL.
+    Supports session-isolated parent schemas when session_id is provided.
     Returns:
         (is_valid, structured_errors, warnings)
     """
@@ -1611,9 +1613,13 @@ def validate_batch_foreign_keys(
     # 2. Check each dataset against batch + database
     db_conn = None
     conn = None
+    session_tables = set()
+    session_schema = get_session_schema_name(session_id)
     try:
         db_conn = DatabaseConnection()
         conn = db_conn.get_connection()
+        if session_schema and db_conn:
+            session_tables = db_conn.get_session_tables(session_id)
     except Exception:
         pass
 
@@ -1638,6 +1644,9 @@ def validate_batch_foreign_keys(
             if parent_tbl in batch_ids:
                 available_parent_ids.update(batch_ids[parent_tbl])
 
+            # Determine parent schema (session schema if parent table exists there, otherwise public)
+            parent_schema = session_schema if (session_schema and parent_tbl in session_tables) else "public"
+
             # Query database for parent IDs not found in batch
             remaining_to_check = child_fk_values - available_parent_ids
             if remaining_to_check and conn:
@@ -1645,16 +1654,18 @@ def validate_batch_foreign_keys(
                     with conn.cursor() as cur:
                         chunk = tuple(list(remaining_to_check)[:1000])
                         if len(chunk) == 1:
-                            q = sql.SQL("SELECT {} FROM {} WHERE {} = %s").format(
+                            q = sql.SQL("SELECT {} FROM {}.{} WHERE {} = %s").format(
                                 sql.Identifier(parent_pk),
-                                sql.Identifier("public", parent_tbl),
+                                sql.Identifier(parent_schema),
+                                sql.Identifier(parent_tbl),
                                 sql.Identifier(parent_pk)
                             )
                             cur.execute(q, (chunk[0],))
                         else:
-                            q = sql.SQL("SELECT {} FROM {} WHERE {} IN %s").format(
+                            q = sql.SQL("SELECT {} FROM {}.{} WHERE {} IN %s").format(
                                 sql.Identifier(parent_pk),
-                                sql.Identifier("public", parent_tbl),
+                                sql.Identifier(parent_schema),
+                                sql.Identifier(parent_tbl),
                                 sql.Identifier(parent_pk)
                             )
                             cur.execute(q, (chunk,))
@@ -1678,9 +1689,9 @@ def validate_batch_foreign_keys(
                     row=row_num,
                     column=fk_col,
                     value=str(first_missing),
-                    problem=f"No matching {parent_pk} exists in public.{parent_tbl}.",
+                    problem=f"No matching {parent_pk} exists in {parent_schema}.{parent_tbl}.",
                     error_type="foreign_key_validation_failed",
-                    expected=f"A valid parent record in public.{parent_tbl} with {parent_pk} = {first_missing}.",
+                    expected=f"A valid parent record in {parent_schema}.{parent_tbl} with {parent_pk} = {first_missing}.",
                     suggested_action=f"Load the required parent record into {parent_tbl} first or correct the {fk_col} value."
                 )
                 structured_errors.append(err.to_dict())
@@ -1688,14 +1699,67 @@ def validate_batch_foreign_keys(
     return len(structured_errors) == 0, structured_errors, warnings
 
 
+def relink_session_foreign_keys(cursor, target_schema: str) -> None:
+    """
+    Ensures all foreign key relationships in target_schema point to session parent tables
+    if the parent exists in target_schema, otherwise referencing public.<parent>.
+    """
+    if not target_schema or target_schema == "public":
+        return
+
+    cursor.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = %s;",
+        (target_schema,)
+    )
+    existing_session_tables = {r[0] for r in cursor.fetchall()}
+
+    for tbl, schema_spec in TABLE_SCHEMAS.items():
+        if tbl not in existing_session_tables:
+            continue
+        fk_rules = schema_spec.get("foreign_keys", {})
+        for fk_col, (parent_tbl, parent_pk) in fk_rules.items():
+            parent_schema = target_schema if parent_tbl in existing_session_tables else "public"
+            fk_name = f"fk_{target_schema}_{tbl}_{fk_col}"[:63]
+
+            # Drop existing constraint if already present
+            cursor.execute(sql.SQL("""
+                ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS {};
+            """).format(
+                sql.Identifier(target_schema),
+                sql.Identifier(tbl),
+                sql.Identifier(fk_name)
+            ))
+
+            # Add updated foreign key constraint
+            try:
+                cursor.execute(sql.SQL("""
+                    ALTER TABLE {}.{} 
+                    ADD CONSTRAINT {} 
+                    FOREIGN KEY ({}) REFERENCES {}.{}({}) 
+                    ON DELETE CASCADE;
+                """).format(
+                    sql.Identifier(target_schema),
+                    sql.Identifier(tbl),
+                    sql.Identifier(fk_name),
+                    sql.Identifier(fk_col),
+                    sql.Identifier(parent_schema),
+                    sql.Identifier(parent_tbl),
+                    sql.Identifier(parent_pk)
+                ))
+            except Exception:
+                pass
+
+
 # ============================================================
 # 9. ATOMIC TRANSACTIONAL DATABASE LOADER
 # Loads validated datasets into PostgreSQL inside a single atomic transaction.
+# Supports session-isolated dataset schemas.
 # ============================================================
 
 def load_datasets_transactional(
     datasets: Dict[str, pd.DataFrame],
-    import_mode: str = "upsert"
+    import_mode: str = "upsert",
+    session_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Loads validated datasets into PostgreSQL inside a single atomic transaction.
@@ -1705,7 +1769,9 @@ def load_datasets_transactional(
     3. rides
     4. payments
     5. ratings
-    
+
+    If session_id is provided, data is written into an isolated session schema
+    (e.g. session_<safe_id>), protecting the public base dataset from corruption or leakage.
     If any table or row fails, the entire transaction is rolled back immediately.
     """
     if not datasets:
@@ -1722,6 +1788,9 @@ def load_datasets_transactional(
         key=lambda tbl: TABLE_SCHEMAS.get(tbl, {}).get("load_order", 99)
     )
 
+    target_schema = get_session_schema_name(session_id) or "public"
+    is_session_scoped = (target_schema != "public")
+
     db_config = get_db_config()
     conn = None
     cursor = None
@@ -1733,13 +1802,37 @@ def load_datasets_transactional(
         conn.autocommit = False  # Start single atomic transaction
         cursor = conn.cursor()
 
-        # Handle 'replace' mode by clearing target tables in reverse dependency order
+        # Ensure session schema exists if session scoped
+        if is_session_scoped:
+            cursor.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {};").format(
+                sql.Identifier(target_schema)
+            ))
+
+        # Handle 'replace' mode
         if import_mode == "replace":
             for tbl in reversed(sorted_tables):
-                cursor.execute(sql.SQL("TRUNCATE TABLE {}.{} CASCADE;").format(
-                    sql.Identifier("public"),
-                    sql.Identifier(tbl)
-                ))
+                if is_session_scoped:
+                    # Check if table already exists in session schema
+                    cursor.execute(
+                        "SELECT 1 FROM information_schema.tables WHERE table_schema = %s AND table_name = %s;",
+                        (target_schema, tbl)
+                    )
+                    if cursor.fetchone():
+                        cursor.execute(sql.SQL("TRUNCATE TABLE {}.{} CASCADE;").format(
+                            sql.Identifier(target_schema),
+                            sql.Identifier(tbl)
+                        ))
+                    else:
+                        cursor.execute(sql.SQL("CREATE TABLE IF NOT EXISTS {}.{} (LIKE public.{} INCLUDING ALL);").format(
+                            sql.Identifier(target_schema),
+                            sql.Identifier(tbl),
+                            sql.Identifier(tbl)
+                        ))
+                else:
+                    cursor.execute(sql.SQL("TRUNCATE TABLE {}.{} CASCADE;").format(
+                        sql.Identifier("public"),
+                        sql.Identifier(tbl)
+                    ))
 
         for tbl in sorted_tables:
             current_loading_table = tbl
@@ -1753,6 +1846,24 @@ def load_datasets_transactional(
             load_cols = [c for c in all_cols if c in df.columns]
             if not load_cols:
                 raise ValueError(f"No valid columns found to load for table '{tbl}'.")
+
+            # For session-isolated append/upsert, clone base table from public if not yet in session schema
+            if is_session_scoped and import_mode in ("append", "upsert"):
+                cursor.execute(
+                    "SELECT 1 FROM information_schema.tables WHERE table_schema = %s AND table_name = %s;",
+                    (target_schema, tbl)
+                )
+                if not cursor.fetchone():
+                    cursor.execute(sql.SQL("CREATE TABLE {}.{} (LIKE public.{} INCLUDING ALL);").format(
+                        sql.Identifier(target_schema),
+                        sql.Identifier(tbl),
+                        sql.Identifier(tbl)
+                    ))
+                    cursor.execute(sql.SQL("INSERT INTO {}.{} SELECT * FROM public.{};").format(
+                        sql.Identifier(target_schema),
+                        sql.Identifier(tbl),
+                        sql.Identifier(tbl)
+                    ))
 
             # Clean and prepare records with strict type adaptation for PostgreSQL
             records = []
@@ -1777,7 +1888,7 @@ def load_datasets_transactional(
                         raise ValueError(format_import_error(
                             dataset=schema["label"],
                             file=f"{tbl}.csv",
-                            target_table=f"public.{tbl}",
+                            target_table=f"{target_schema}.{tbl}",
                             column=c,
                             row=csv_row_num,
                             value=str(raw_val),
@@ -1796,11 +1907,11 @@ def load_datasets_transactional(
 
             if import_mode == "append":
                 insert_query = f"""
-                    INSERT INTO public.{tbl} ({cols_str})
+                    INSERT INTO {target_schema}.{tbl} ({cols_str})
                     VALUES %s;
                 """
             else:
-                # Upsert mode (default)
+                # Upsert mode (default) / Replace mode
                 update_cols = [c for c in load_cols if c != pk]
                 if update_cols:
                     update_str = ", ".join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
@@ -1809,7 +1920,7 @@ def load_datasets_transactional(
                     conflict_clause = f'ON CONFLICT ("{pk}") DO NOTHING'
 
                 insert_query = f"""
-                    INSERT INTO public.{tbl} ({cols_str})
+                    INSERT INTO {target_schema}.{tbl} ({cols_str})
                     VALUES %s
                     {conflict_clause};
                 """
@@ -1817,13 +1928,19 @@ def load_datasets_transactional(
             execute_values(cursor, insert_query, records, page_size=1000)
             loaded_counts[tbl] = len(records)
 
-        # Commit all table inserts atomically
+        # Ensure session foreign key constraints point to session parent tables when present
+        if is_session_scoped:
+            relink_session_foreign_keys(cursor, target_schema)
+
+        # Commit all table inserts and constraint updates atomically
         conn.commit()
 
         return {
             "success": True,
-            "message": "All datasets loaded successfully into PostgreSQL.",
-            "loaded_counts": loaded_counts
+            "message": f"All datasets loaded successfully into PostgreSQL ({target_schema}).",
+            "loaded_counts": loaded_counts,
+            "session_id": session_id,
+            "schema": target_schema
         }
 
     except Exception as e:

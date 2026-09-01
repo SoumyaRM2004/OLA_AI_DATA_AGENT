@@ -524,7 +524,7 @@ def canceled_sql(state: AgentSchema) -> AgentSchema:
 # 8. EXECUTE SQL & DIAGNOSTIC COVERAGE ANALYZER
 # ============================================================
 
-def diagnose_query_coverage(sql_query: str, db: DatabaseConnection) -> Dict[str, Any]:
+def diagnose_query_coverage(sql_query: str, db: DatabaseConnection, session_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Analyzes dataset coverage and overlap when queries involve joins (especially rides and weather_data)
     or when queries return zero rows.
@@ -593,7 +593,7 @@ def diagnose_query_coverage(sql_query: str, db: DatabaseConnection) -> Dict[str,
                 {city_where};
             """
 
-            res = db.execute_query_structured(diag_sql)
+            res = db.execute_query_structured(diag_sql, session_id=session_id)
             if res["records"]:
                 rec = res["records"][0]
                 total_rides = int(rec.get("total_rides") or 0)
@@ -658,7 +658,7 @@ def diagnose_query_coverage(sql_query: str, db: DatabaseConnection) -> Dict[str,
                     break
 
             if matched_table:
-                count_res = db.execute_query_structured(f"SELECT COUNT(*) AS total FROM public.{matched_table};")
+                count_res = db.execute_query_structured(f"SELECT COUNT(*) AS total FROM public.{matched_table};", session_id=session_id)
                 if count_res["records"]:
                     tbl_count = int(count_res["records"][0].get("total") or 0)
                     if tbl_count == 0:
@@ -673,7 +673,7 @@ def diagnose_query_coverage(sql_query: str, db: DatabaseConnection) -> Dict[str,
     return diagnostics
 
 
-def diagnose_empty_result(sql_query: str, curated_question: str, db: DatabaseConnection) -> Dict[str, Any]:
+def diagnose_empty_result(sql_query: str, curated_question: str, db: DatabaseConnection, session_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Runs lightweight diagnostic queries when an analytical query returns 0 rows.
     Determines whether a requested filter/threshold (e.g. >= 20 completed rides) is impossible
@@ -707,15 +707,15 @@ def diagnose_empty_result(sql_query: str, curated_question: str, db: DatabaseCon
         
         try:
             # Check column count
-            sample_res = db.execute_query_structured(f"SELECT * FROM ({base_query}) AS sub LIMIT 1;")
+            sample_res = db.execute_query_structured(f"SELECT * FROM ({base_query}) AS sub LIMIT 1;", session_id=session_id)
             num_cols = len(sample_res.get("columns", []))
             metric_col_idx = num_cols if num_cols >= 1 else 2
             
             top_sql = f"SELECT * FROM ({base_query}) AS sub ORDER BY {metric_col_idx} DESC LIMIT 1;"
             count_sql = f"SELECT COUNT(*) AS total_groups FROM ({base_query}) AS sub;"
 
-            res_top = db.execute_query_structured(top_sql)
-            res_cnt = db.execute_query_structured(count_sql)
+            res_top = db.execute_query_structured(top_sql, session_id=session_id)
+            res_cnt = db.execute_query_structured(count_sql, session_id=session_id)
 
             if res_top.get("records") and res_cnt.get("records"):
                 top_rec = res_top["records"][0]
@@ -773,7 +773,7 @@ def diagnose_empty_result(sql_query: str, curated_question: str, db: DatabaseCon
             if tbl:
                 try:
                     stats_sql = f"SELECT COUNT(*) AS total, MIN({col_name}) AS min_v, MAX({col_name}) AS max_v, ROUND(AVG({col_name}), 2) AS avg_v FROM public.{tbl} WHERE {col_name} IS NOT NULL;"
-                    stats_res = db.execute_query_structured(stats_sql)
+                    stats_res = db.execute_query_structured(stats_sql, session_id=session_id)
                     if stats_res.get("records"):
                         s = stats_res["records"][0]
                         total_cnt = int(s.get('total') or 0)
@@ -799,15 +799,16 @@ def diagnose_empty_result(sql_query: str, curated_question: str, db: DatabaseCon
 
 def execute_sql(state: AgentSchema) -> AgentSchema:
     sql_query = state.generated_sql_query
+    session_id = state.session_id
     db = DatabaseConnection()
 
-    result_dict = db.execute_query_structured(sql_query)
+    result_dict = db.execute_query_structured(sql_query, session_id=session_id)
 
     # Self-healing: if PostgreSQL returned a GROUP BY error, sanitize and retry once
     if result_dict.get("error") and "must appear in the GROUP BY clause" in str(result_dict.get("error")):
         sanitized_sql = sanitize_group_by_sql(sql_query)
         if sanitized_sql != sql_query:
-            retry_dict = db.execute_query_structured(sanitized_sql)
+            retry_dict = db.execute_query_structured(sanitized_sql, session_id=session_id)
             if not retry_dict.get("error"):
                 result_dict = retry_dict
                 state.generated_sql_query = sanitized_sql
@@ -830,6 +831,7 @@ def represent_final_answer(state: AgentSchema) -> AgentSchema:
     execution_result = state.sql_query_execution_result
     curated_question = state.curated_ques
     sql_query = state.generated_sql_query
+    session_id = state.session_id
     db = DatabaseConnection()
 
     if state.error:
@@ -838,7 +840,7 @@ def represent_final_answer(state: AgentSchema) -> AgentSchema:
         return state
 
     # Perform diagnostic analysis on coverage and joins
-    diag = diagnose_query_coverage(sql_query, db)
+    diag = diagnose_query_coverage(sql_query, db, session_id=session_id)
 
     # 1. Handle No-Overlap scenario (INNER JOIN produced zero rows due to date/city mismatch)
     if diag["is_weather_rides_join"] and diag["overlap_status"] == "NO_OVERLAP":
@@ -854,7 +856,7 @@ def represent_final_answer(state: AgentSchema) -> AgentSchema:
 
     # 3. Handle zero rows returned on non-weather query
     if not state.data_rows:
-        diag_empty = diagnose_empty_result(sql_query, curated_question, db)
+        diag_empty = diagnose_empty_result(sql_query, curated_question, db, session_id=session_id)
         if diag_empty.get("has_diagnostic") and diag_empty.get("explanation"):
             state.final_answer = diag_empty["explanation"]
         elif diag.get("explanation"):

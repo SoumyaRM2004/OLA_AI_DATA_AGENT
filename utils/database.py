@@ -1,8 +1,9 @@
 import os
+import re
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extras import execute_values
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -18,6 +19,20 @@ def get_db_config() -> Dict[str, Any]:
         "user": os.getenv("user", "postgres"),
         "password": os.getenv("password", ""),
     }
+
+
+def sanitize_session_id(session_id: Optional[str]) -> Optional[str]:
+    """Sanitizes a session_id into a safe PostgreSQL identifier."""
+    if not session_id or str(session_id).strip().lower() in ("default", "public", "none", "null", ""):
+        return None
+    safe = "".join(c for c in str(session_id).strip() if c.isalnum() or c == "_")[:60]
+    return safe if safe else None
+
+
+def get_session_schema_name(session_id: Optional[str]) -> Optional[str]:
+    """Returns the PostgreSQL schema name for a given session_id, or None for public."""
+    safe_id = sanitize_session_id(session_id)
+    return f"session_{safe_id}" if safe_id else None
 
 
 class DatabaseConnection:
@@ -40,6 +55,7 @@ class DatabaseConnection:
     def _connect(self):
         try:
             self.connection = psycopg2.connect(**self.db_config)
+            self.connection.autocommit = True
         except Exception as e:
             print(f"Error connecting to database: {e}")
             self.connection = None
@@ -106,17 +122,93 @@ class DatabaseConnection:
 
         return schema_info_context
 
-    def execute_query(self, query: str) -> str:
+    def get_session_tables(self, session_id: Optional[str]) -> Set[str]:
+        """Returns the set of custom table names existing in the session's PostgreSQL schema."""
+        schema_name = get_session_schema_name(session_id)
+        if not schema_name:
+            return set()
+
+        conn = self.get_connection()
+        if not conn:
+            return set()
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = %s;",
+                    (schema_name,)
+                )
+                rows = cur.fetchall()
+                return {r[0] for r in rows}
+        except Exception as e:
+            print(f"Error fetching session tables for {schema_name}: {e}")
+            return set()
+
+    def resolve_query_for_session(self, query: str, session_id: Optional[str]) -> str:
+        """
+        Rewrites a SQL query to target session-specific tables if they exist in the session schema.
+        Tables not overridden in the session schema fall back to public.
+        Protects SQL string literals and comments from being rewritten.
+        """
+        if not query or not session_id:
+            return query
+
+        session_tables = self.get_session_tables(session_id)
+        if not session_tables:
+            return query
+
+        schema_name = get_session_schema_name(session_id)
+        if not schema_name:
+            return query
+
+        # 1. Mask comments and string literals
+        token_map = {}
+        counter = [0]
+        def mask_match(m):
+            tok = f"___SQL_MASK_{counter[0]}___"
+            counter[0] += 1
+            token_map[tok] = m.group(0)
+            return tok
+
+        # Match block comments, line comments, dollar quotes, and single-quoted strings
+        pattern = re.compile(
+            r'(/\*[\s\S]*?\*/|--[^\r\n]*|\$[a-zA-Z0-9_]*\$[\s\S]*?\$[a-zA-Z0-9_]*\$|\'(?:[^\']|\'\')*\')'
+        )
+        masked = pattern.sub(mask_match, query)
+
+        # 2. Process each overridden session table
+        for tbl in session_tables:
+            # A. Replace explicit public.table_name with session_schema.table_name
+            pat_pub = re.compile(rf'\bpublic\.{tbl}\b', re.IGNORECASE)
+            masked = pat_pub.sub(f'{schema_name}.{tbl}', masked)
+
+            # B. Replace unqualified table references, ensuring not already session-prefixed
+            pat_clause = re.compile(
+                rf'(?:(,\s*)|\b(FROM|JOIN|INTO|UPDATE|TABLE)\s+)(?!(?:public|session_[a-zA-Z0-9_]+)\.)\b({tbl})\b',
+                re.IGNORECASE
+            )
+            def make_repl(target_tbl):
+                return lambda m: f"{(m.group(1) or (m.group(2) + ' '))}{schema_name}.{target_tbl}"
+            masked = pat_clause.sub(make_repl(tbl), masked)
+
+        # 3. Unmask comments and string literals
+        for tok, orig in token_map.items():
+            masked = masked.replace(tok, orig)
+
+        return masked
+
+    def execute_query(self, query: str, session_id: Optional[str] = None) -> str:
         """Executes a query and returns stringified results for the LLM."""
-        res = self.execute_query_structured(query)
+        res = self.execute_query_structured(query, session_id=session_id)
         if res["error"]:
             return f"SQL execution error: {res['error']}"
         return res["raw_text"]
 
-    def execute_query_structured(self, query: str) -> Dict[str, Any]:
+    def execute_query_structured(self, query: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Executes a validated read-only SQL query and returns column names, rows, structured dicts,
         and raw string formatting for visualization and charting without unnecessary commits.
+        Automatically scopes query execution to session-isolated tables when session_id is provided.
         """
         connection = self.get_connection()
         if not connection:
@@ -129,10 +221,11 @@ class DatabaseConnection:
                 "error": "Database connection not available."
             }
 
+        resolved_query = self.resolve_query_for_session(query, session_id)
         cursor = None
         try:
             cursor = connection.cursor()
-            cursor.execute(query)
+            cursor.execute(resolved_query)
 
             if cursor.description:
                 columns = [desc[0] for desc in cursor.description]
@@ -276,13 +369,16 @@ class DatabaseConnection:
             if cursor:
                 cursor.close()
 
-    def get_table_data(self, table_name: str, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
-        """Fetches table columns and rows for Database Explorer with pagination limit and offset."""
-        query = f"SELECT * FROM public.{table_name} LIMIT {limit} OFFSET {offset};"
-        return self.execute_query_structured(query)
+    def get_table_data(self, table_name: str, limit: int = 50, offset: int = 0, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Fetches table columns and rows for Database Explorer with pagination limit, offset, and session isolation."""
+        schema_name = get_session_schema_name(session_id)
+        session_tables = self.get_session_tables(session_id) if schema_name else set()
+        target_schema = schema_name if table_name in session_tables else "public"
+        query = f"SELECT * FROM {target_schema}.{table_name} LIMIT {limit} OFFSET {offset};"
+        return self.execute_query_structured(query, session_id=session_id)
 
-    def get_database_stats(self) -> Dict[str, Any]:
-        """Fetches high-level metrics for dashboard cards and charts."""
+    def get_database_stats(self, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Fetches high-level metrics for dashboard cards and charts scoped to the active session dataset."""
         stats = {
             "total_rides": 0,
             "total_users": 0,
@@ -304,37 +400,37 @@ class DatabaseConnection:
 
         try:
             # Total users
-            res = self.execute_query_structured("SELECT COUNT(*) AS total FROM public.users;")
+            res = self.execute_query_structured("SELECT COUNT(*) AS total FROM public.users;", session_id=session_id)
             if res["records"]:
                 stats["total_users"] = int(res["records"][0].get("total", 0))
 
             # Total rides & completed rides
-            res = self.execute_query_structured("SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN status ILIKE 'completed' THEN 1 ELSE 0 END), 0) AS completed FROM public.rides;")
+            res = self.execute_query_structured("SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN status ILIKE 'completed' THEN 1 ELSE 0 END), 0) AS completed FROM public.rides;", session_id=session_id)
             if res["records"]:
                 stats["total_rides"] = int(res["records"][0].get("total", 0))
                 stats["completed_rides"] = int(res["records"][0].get("completed", 0))
 
             # Total vehicles
-            res = self.execute_query_structured("SELECT COUNT(*) AS total FROM public.vehicles;")
+            res = self.execute_query_structured("SELECT COUNT(*) AS total FROM public.vehicles;", session_id=session_id)
             if res["records"]:
                 stats["total_vehicles"] = int(res["records"][0].get("total", 0))
 
             # Total revenue (completed & successful transactions)
-            res = self.execute_query_structured("SELECT COALESCE(SUM(amount), 0) AS revenue FROM public.payments WHERE payment_status ILIKE '%success%' OR payment_status ILIKE '%complet%';")
+            res = self.execute_query_structured("SELECT COALESCE(SUM(amount), 0) AS revenue FROM public.payments WHERE payment_status ILIKE '%success%' OR payment_status ILIKE '%complet%';", session_id=session_id)
             if res["records"]:
                 stats["total_revenue"] = float(res["records"][0].get("revenue", 0))
 
             # Average rating
-            res = self.execute_query_structured("SELECT COALESCE(AVG(rating), 0) AS avg_rating FROM public.ratings;")
+            res = self.execute_query_structured("SELECT COALESCE(AVG(rating), 0) AS avg_rating FROM public.ratings;", session_id=session_id)
             if res["records"]:
                 stats["avg_rating"] = round(float(res["records"][0].get("avg_rating", 0)), 2)
 
             # Payment breakdown
-            res = self.execute_query_structured("SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total FROM public.payments GROUP BY payment_method ORDER BY count DESC;")
+            res = self.execute_query_structured("SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total FROM public.payments GROUP BY payment_method ORDER BY count DESC;", session_id=session_id)
             stats["payment_breakdown"] = res["records"]
 
             # Rides by status
-            res = self.execute_query_structured("SELECT status, COUNT(*) AS count FROM public.rides GROUP BY status ORDER BY count DESC;")
+            res = self.execute_query_structured("SELECT status, COUNT(*) AS count FROM public.rides GROUP BY status ORDER BY count DESC;", session_id=session_id)
             stats["rides_by_status"] = res["records"]
 
             # Top 5 drivers
@@ -347,7 +443,7 @@ class DatabaseConnection:
                 GROUP BY u.user_id, u.first_name, u.last_name
                 ORDER BY avg_rating DESC, total_reviews DESC
                 LIMIT 5;
-            """)
+            """, session_id=session_id)
             stats["top_drivers"] = res["records"]
 
             # Weather statistics
@@ -358,7 +454,7 @@ class DatabaseConnection:
                     ROUND(AVG(temperature_c)::numeric, 1) AS avg_temperature,
                     COALESCE(SUM(CASE WHEN is_rainy THEN 1 ELSE 0 END), 0) AS rainy_hours_count
                 FROM public.weather_data;
-            """)
+            """, session_id=session_id)
             if w_res["records"]:
                 stats["weather_stats"]["total_records"] = w_res["records"][0].get("total_records", 0)
                 stats["weather_stats"]["cities_count"] = w_res["records"][0].get("cities_count", 0)
@@ -376,7 +472,7 @@ class DatabaseConnection:
                 FROM public.weather_data
                 GROUP BY city
                 ORDER BY city;
-            """)
+            """, session_id=session_id)
             stats["weather_stats"]["city_breakdown"] = w_city["records"]
 
         except Exception as e:

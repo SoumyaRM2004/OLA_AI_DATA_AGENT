@@ -1,7 +1,7 @@
 import os
 import sys
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Header, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +13,7 @@ load_dotenv()
 # Add root directory to sys.path
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from utils.database import DatabaseConnection
+from utils.database import DatabaseConnection, sanitize_session_id, get_session_schema_name
 from utils.etl_tools import ETLTools, CITY_COORDINATES, normalize_date_str
 from utils.data_importer import (
     validate_csv_content,
@@ -44,14 +44,35 @@ app.add_middleware(
 )
 
 
+def extract_session_id(header_val: Optional[str] = None, param_val: Optional[str] = None, body_val: Optional[str] = None) -> Optional[str]:
+    """Helper to extract non-empty session identifier from header, query param, or body."""
+    for val in [header_val, param_val, body_val]:
+        if val and str(val).strip() and str(val).strip().lower() not in ("none", "null", "undefined"):
+            return str(val).strip()
+    return None
+
+
+def get_upload_dir(session_id: Optional[str] = None) -> str:
+    """Returns the isolated uploads directory for a given session."""
+    safe_id = sanitize_session_id(session_id)
+    if safe_id:
+        path = os.path.join(os.path.dirname(__file__), "data", "uploads", safe_id)
+    else:
+        path = os.path.join(os.path.dirname(__file__), "data", "uploads", "default")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 # ------------------- PYDANTIC MODELS -------------------
 
 class ChatRequest(BaseModel):
     message: str
     chat_id: Optional[str] = None
+    session_id: Optional[str] = None
 
 class CreateChatRequest(BaseModel):
     title: Optional[str] = "New Chat"
+    session_id: Optional[str] = None
 
 class UpdateChatRequest(BaseModel):
     title: str
@@ -78,109 +99,160 @@ class LoadDbRequest(BaseModel):
 # ------------------- API ENDPOINTS -------------------
 
 @app.get("/api/chats")
-async def list_chats_endpoint():
-    """Returns list of all persistent chat sessions."""
-    chats = ChatStore.list_chats()
+async def list_chats_endpoint(
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
+    session_id: Optional[str] = Query(None)
+):
+    """Returns list of persistent chat sessions for the active user/session."""
+    sid = extract_session_id(x_session_id, session_id)
+    chats = ChatStore.list_chats(session_id=sid)
     return JSONResponse(content={"chats": chats})
 
 
 @app.post("/api/chats")
-async def create_chat_endpoint(request: Optional[CreateChatRequest] = None):
-    """Creates a new unique chat session."""
+async def create_chat_endpoint(
+    request: Optional[CreateChatRequest] = None,
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID")
+):
+    """Creates a new unique chat session associated with the active session."""
     title = request.title if request and request.title else "New Chat"
-    chat = ChatStore.create_chat(title=title)
+    req_sid = request.session_id if request else None
+    sid = extract_session_id(x_session_id, req_sid)
+    chat = ChatStore.create_chat(title=title, session_id=sid)
     return JSONResponse(content=chat)
 
 
 @app.get("/api/chats/{chat_id}")
-async def get_chat_endpoint(chat_id: str):
-    """Fetches full chat session with message history."""
-    chat = ChatStore.get_chat(chat_id)
+async def get_chat_endpoint(
+    chat_id: str,
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
+    session_id: Optional[str] = Query(None)
+):
+    """Fetches full chat session with message history, isolated by session ownership."""
+    sid = extract_session_id(x_session_id, session_id)
+    chat = ChatStore.get_chat(chat_id, session_id=sid)
     if not chat:
         raise HTTPException(status_code=404, detail=f"Chat session '{chat_id}' not found.")
     return JSONResponse(content=chat)
 
 
 @app.put("/api/chats/{chat_id}")
-async def update_chat_endpoint(chat_id: str, request: UpdateChatRequest):
-    """Renames a specific chat session."""
+async def update_chat_endpoint(
+    chat_id: str,
+    request: UpdateChatRequest,
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID")
+):
+    """Renames a specific chat session if owned by the active session."""
     if not request.title or not request.title.strip():
         raise HTTPException(status_code=400, detail="Title cannot be empty.")
-    chat = ChatStore.update_chat_title(chat_id, request.title.strip())
+    sid = extract_session_id(x_session_id)
+    chat = ChatStore.update_chat_title(chat_id, request.title.strip(), session_id=sid)
     if not chat:
         raise HTTPException(status_code=404, detail=f"Chat session '{chat_id}' not found.")
     return JSONResponse(content=chat)
 
 
 @app.delete("/api/chats/{chat_id}")
-async def delete_chat_endpoint(chat_id: str):
-    """Deletes a chat session."""
-    ChatStore.delete_chat(chat_id)
+async def delete_chat_endpoint(
+    chat_id: str,
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
+    session_id: Optional[str] = Query(None)
+):
+    """Deletes a chat session if owned by the active session."""
+    sid = extract_session_id(x_session_id, session_id)
+    success = ChatStore.delete_chat(chat_id, session_id=sid)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Chat session '{chat_id}' not found.")
     return JSONResponse(content={"success": True, "message": f"Chat session '{chat_id}' deleted."})
 
 
 @app.post("/api/chats/{chat_id}/clear")
-async def clear_chat_endpoint(chat_id: str):
-    """Clears messages for a specific chat session."""
-    success = ChatStore.clear_messages(chat_id)
+async def clear_chat_endpoint(
+    chat_id: str,
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
+    session_id: Optional[str] = Query(None)
+):
+    """Clears messages for a specific chat session if owned by the active session."""
+    sid = extract_session_id(x_session_id, session_id)
+    success = ChatStore.clear_messages(chat_id, session_id=sid)
     if not success:
         raise HTTPException(status_code=404, detail=f"Chat session '{chat_id}' not found.")
     return JSONResponse(content={"success": True, "message": "Chat history cleared."})
 
 
 @app.post("/api/chat")
-async def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(
+    request: ChatRequest,
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID")
+):
     """
     Main interaction point for the AI Data Agent.
     Routes between SQL Analyst and ETL Analyst.
-    Always executes live query against current PostgreSQL database.
+    Always executes live query against active session dataset in PostgreSQL.
     """
     if not request.message or not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
-    
+
+    sid = extract_session_id(x_session_id, request.session_id)
     chat_id = request.chat_id
-    if not chat_id or not ChatStore.get_chat(chat_id):
-        new_chat = ChatStore.create_chat(title="New Chat")
+    chat_obj = ChatStore.get_chat(chat_id, session_id=sid) if chat_id else None
+
+    # If chat_id does not exist or belongs to another session, create a new chat for this session
+    if not chat_id or not chat_obj:
+        new_chat = ChatStore.create_chat(title="New Chat", session_id=sid)
         chat_id = new_chat["id"]
+        chat_obj = new_chat
+    elif not sid and chat_obj.get("session_id"):
+        sid = chat_obj.get("session_id")
 
     # 1. Record user message in persistent chat session
-    ChatStore.add_message(chat_id, role="user", content=request.message.strip())
+    ChatStore.add_message(chat_id, role="user", content=request.message.strip(), extra_data={"session_id": sid}, session_id=sid)
 
-    # 2. Execute live agent query against PostgreSQL
-    result = execute_agent_query(request.message.strip())
+    # 2. Execute live agent query against PostgreSQL scoped to active session dataset
+    result = execute_agent_query(request.message.strip(), chat_id=chat_id, session_id=sid)
 
     # 3. Record assistant response in persistent chat session
     ChatStore.add_message(
         chat_id,
         role="assistant",
         content=result.get("answer", ""),
-        extra_data=result
+        extra_data=result,
+        session_id=sid
     )
 
     # 4. Attach chat context metadata
-    updated_chat = ChatStore.get_chat(chat_id)
+    updated_chat = ChatStore.get_chat(chat_id, session_id=sid)
     result["chat_id"] = chat_id
     result["chat_title"] = updated_chat.get("title", "New Chat") if updated_chat else "New Chat"
+    result["session_id"] = sid
 
     return JSONResponse(content=result)
 
 
 @app.get("/api/stats")
-async def get_stats():
+async def get_stats(
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
+    session_id: Optional[str] = Query(None)
+):
     """
-    Fetches database KPIs and aggregated metrics for the overview dashboard.
+    Fetches database KPIs and aggregated metrics for the overview dashboard scoped to session dataset.
     """
+    sid = extract_session_id(x_session_id, session_id)
     db = DatabaseConnection()
-    stats = db.get_database_stats()
+    stats = db.get_database_stats(session_id=sid)
     return JSONResponse(content=stats)
 
 
 @app.get("/api/schema")
-async def get_schema():
+async def get_schema(
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
+    session_id: Optional[str] = Query(None)
+):
     """
-    Fetches schema information, table list, and row counts for all tables (including weather_data).
+    Fetches schema information, table list, and row counts scoped to session dataset.
     """
     try:
+        sid = extract_session_id(x_session_id, session_id)
         db = DatabaseConnection()
         conn = db.get_connection()
         if not conn:
@@ -194,22 +266,27 @@ async def get_schema():
 
         tables = ["users", "vehicles", "rides", "payments", "ratings", "weather_data"]
         schema_data = {}
+        session_tables = db.get_session_tables(sid) if sid else set()
+        session_schema = get_session_schema_name(sid)
 
         for table in tables:
+            active_schema = session_schema if (session_schema and table in session_tables) else "public"
+            target_table_ref = f"{active_schema}.{table}"
+
             # Get columns and data types
             col_res = db.execute_query_structured(f"""
                 SELECT column_name, data_type, is_nullable
                 FROM information_schema.columns
-                WHERE table_name = '{table}' AND table_schema = 'public'
+                WHERE table_name = '{table}' AND table_schema = '{active_schema}'
                 ORDER BY ordinal_position;
-            """)
-            
+            """, session_id=sid)
+
             # Get row count
-            count_res = db.execute_query_structured(f"SELECT COUNT(*) AS total FROM public.{table};")
+            count_res = db.execute_query_structured(f"SELECT COUNT(*) AS total FROM {target_table_ref};", session_id=sid)
             row_count = count_res["records"][0]["total"] if count_res["records"] else 0
 
             # Sample rows
-            sample_res = db.execute_query_structured(f"SELECT * FROM public.{table} LIMIT 3;")
+            sample_res = db.execute_query_structured(f"SELECT * FROM {target_table_ref} LIMIT 3;", session_id=sid)
 
             schema_data[table] = {
                 "columns": col_res.get("records", []),
@@ -227,9 +304,15 @@ async def get_schema():
 
 
 @app.get("/api/tables/{table_name}")
-async def get_table_content(table_name: str, limit: int = 50, offset: int = 0):
+async def get_table_content(
+    table_name: str,
+    limit: int = 50,
+    offset: int = 0,
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
+    session_id: Optional[str] = Query(None)
+):
     """
-    Returns live table data with pagination limit for the Database Explorer.
+    Returns live table data with pagination limit for the Database Explorer scoped to session dataset.
     """
     valid_tables = ["users", "vehicles", "rides", "payments", "ratings", "weather_data"]
     if table_name not in valid_tables:
@@ -242,8 +325,9 @@ async def get_table_content(table_name: str, limit: int = 50, offset: int = 0):
         raise HTTPException(status_code=400, detail="Query offset parameter must be non-negative.")
 
     try:
+        sid = extract_session_id(x_session_id, session_id)
         db = DatabaseConnection()
-        res = db.get_table_data(table_name, limit=limit, offset=offset)
+        res = db.get_table_data(table_name, limit=limit, offset=offset, session_id=sid)
         return JSONResponse(content=res)
     except Exception as e:
         return JSONResponse(
@@ -415,6 +499,7 @@ def serialize_dict_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]
 class LoadImportRequest(BaseModel):
     tables: Optional[List[str]] = None
     import_mode: Optional[str] = "upsert"
+    session_id: Optional[str] = None
 
 @app.get("/api/import/schema-info")
 async def get_import_schema_info():
@@ -502,14 +587,17 @@ async def validate_import_file(
     dataset_type: str = Form(...),
     custom_mappings: Optional[str] = Form(None),
     default_values: Optional[str] = Form(None),
-    import_mode: Optional[str] = Form("upsert")
+    import_mode: Optional[str] = Form("upsert"),
+    session_id: Optional[str] = Form(None),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID")
 ):
     """
     Validates an uploaded CSV file strictly against the selected/detected OLA mobility schema.
     Applies column mappings, normalizes raw values (NaN, NULL, timestamps), checks PKs and FKs,
-    and stages the canonical dataset if valid.
+    and stages the canonical dataset in the session's isolated directory if valid.
     """
     file_bytes = await file.read()
+    sid = extract_session_id(x_session_id, session_id)
     
     parsed_custom_mappings = None
     if custom_mappings and custom_mappings.strip():
@@ -550,10 +638,9 @@ async def validate_import_file(
         # Top 10 records for UI table preview with safe serialization
         sample_records = serialize_dict_records(df.head(10).to_dict(orient="records"))
 
-        # Save normalized data to temporary staging directory if valid
+        # Save normalized data to session-isolated temporary staging directory if valid
         if is_valid and table_name:
-            upload_dir = os.path.join(os.path.dirname(__file__), "data", "uploads")
-            os.makedirs(upload_dir, exist_ok=True)
+            upload_dir = get_upload_dir(sid)
             staged_path = os.path.join(upload_dir, f"{table_name}_staged.csv")
             df.to_csv(staged_path, index=False)
 
@@ -569,17 +656,22 @@ async def validate_import_file(
         "structured_errors": structured_errors,
         "errors": text_errors,
         "warnings": warnings,
-        "metadata": metadata
+        "metadata": metadata,
+        "session_id": sid
     })
 
 
 @app.post("/api/import/load")
-async def load_staged_imports(request: LoadImportRequest):
+async def load_staged_imports(
+    request: LoadImportRequest,
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID")
+):
     """
     Loads validated and staged CSV datasets into PostgreSQL inside a single atomic transaction.
-    If any table fails, the transaction is rolled back immediately.
+    Isolates data to the session-specific PostgreSQL schema without touching the base dataset.
     """
-    upload_dir = os.path.join(os.path.dirname(__file__), "data", "uploads")
+    sid = extract_session_id(x_session_id, request.session_id)
+    upload_dir = get_upload_dir(sid)
     if not os.path.exists(upload_dir):
         raise HTTPException(status_code=400, detail="No staged datasets found to load.")
 
@@ -600,8 +692,8 @@ async def load_staged_imports(request: LoadImportRequest):
     if not datasets:
         raise HTTPException(status_code=400, detail="No valid staged datasets selected for database loading.")
 
-    # 1. Validate foreign keys across batch & live PostgreSQL
-    fk_valid, fk_errors, fk_warnings = validate_batch_foreign_keys(datasets)
+    # 1. Validate foreign keys across batch & session/live PostgreSQL
+    fk_valid, fk_errors, fk_warnings = validate_batch_foreign_keys(datasets, session_id=sid)
     if not fk_valid:
         text_fk_errors = [
             err["problem"] if isinstance(err, dict) and "problem" in err else str(err)
@@ -618,8 +710,8 @@ async def load_staged_imports(request: LoadImportRequest):
             }
         )
 
-    # 2. Transactional Load into PostgreSQL
-    result = load_datasets_transactional(datasets, import_mode=request.import_mode or "upsert")
+    # 2. Transactional Load into PostgreSQL session schema
+    result = load_datasets_transactional(datasets, import_mode=request.import_mode or "upsert", session_id=sid)
     
     # 3. Clean up staged files on success
     if result.get("success"):
@@ -635,9 +727,13 @@ async def load_staged_imports(request: LoadImportRequest):
 
 
 @app.post("/api/import/clear-staged")
-async def clear_staged_imports():
-    """Clears all staged uploads."""
-    upload_dir = os.path.join(os.path.dirname(__file__), "data", "uploads")
+async def clear_staged_imports(
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
+    session_id: Optional[str] = Query(None)
+):
+    """Clears all staged uploads for the active session."""
+    sid = extract_session_id(x_session_id, session_id)
+    upload_dir = get_upload_dir(sid)
     if os.path.exists(upload_dir):
         for f in os.listdir(upload_dir):
             if f.endswith("_staged.csv"):
@@ -645,7 +741,7 @@ async def clear_staged_imports():
                     os.remove(os.path.join(upload_dir, f))
                 except Exception:
                     pass
-    return JSONResponse(content={"message": "Staged imports cleared successfully."})
+    return JSONResponse(content={"message": "Staged imports cleared successfully.", "session_id": sid})
 
 
 

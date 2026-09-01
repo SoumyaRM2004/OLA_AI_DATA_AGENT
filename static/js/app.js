@@ -2,6 +2,37 @@
  * OLA AI Data Agent — Frontend Application Logic
  */
 
+// Session identity management for dataset isolation
+function getOrCreateSessionId() {
+    let sid = localStorage.getItem('ola_session_id');
+    if (!sid || sid.trim() === '') {
+        sid = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+        localStorage.setItem('ola_session_id', sid);
+    }
+    return sid;
+}
+
+// Transparent fetch interceptor to attach X-Session-ID to backend API calls
+const _originalFetch = window.fetch;
+window.fetch = function (resource, init) {
+    init = init || {};
+    const url = typeof resource === 'string' ? resource : (resource && resource.url ? resource.url : '');
+    if (url.startsWith('/api/') || url.includes('/api/')) {
+        const sid = getOrCreateSessionId();
+        init.headers = init.headers || {};
+        if (init.headers instanceof Headers) {
+            if (!init.headers.has('X-Session-ID')) {
+                init.headers.set('X-Session-ID', sid);
+            }
+        } else if (Array.isArray(init.headers)) {
+            init.headers.push(['X-Session-ID', sid]);
+        } else {
+            init.headers['X-Session-ID'] = sid;
+        }
+    }
+    return _originalFetch.call(this, resource, init);
+};
+
 document.addEventListener('DOMContentLoaded', () => {
     initNavigation();
     initChat();

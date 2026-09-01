@@ -1,7 +1,7 @@
 import os
 import sys
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 logging.getLogger("google.genai").setLevel(logging.ERROR)
 logging.getLogger("google_genai").setLevel(logging.ERROR)
@@ -76,7 +76,8 @@ def sql_node(state: DataAgentSchema) -> DataAgentSchema:
         "data_rows": [],
         "data_dicts": [],
         "final_answer": "",
-        "error": ""
+        "error": "",
+        "session_id": state.session_id
     }
 
     response = sql_analyst.invoke(input_schema)
@@ -622,19 +623,35 @@ def auto_detect_chart(columns: List[str], records: List[Dict[str, Any]]) -> Dict
     return {"can_chart": False, "mode": "table_only"}
 
 
-def execute_agent_query(user_question: str) -> Dict[str, Any]:
+def execute_agent_query(
+    user_question: str,
+    chat_id: Optional[str] = None,
+    session_id: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Executes the multi-agent workflow for a given question and returns
     rich metadata for the UI including reasoning steps, SQL, table data, and chart info.
+    Supports session-isolated dataset execution via session_id or chat_id.
     """
     import time
     last_error = None
+
+    if not session_id and chat_id:
+        try:
+            from utils.chat_store import ChatStore
+            chat_obj = ChatStore.get_chat(chat_id)
+            if chat_obj and chat_obj.get("session_id"):
+                session_id = chat_obj.get("session_id")
+        except Exception:
+            pass
+
     for attempt in range(3):
         try:
             response = data_agent.invoke(
                 {
                     "messages": [HumanMessage(content=user_question)],
-                    "route_response": ""
+                    "route_response": "",
+                    "session_id": session_id
                 }
             )
 

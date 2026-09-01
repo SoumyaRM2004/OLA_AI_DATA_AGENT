@@ -45,8 +45,8 @@ class ChatStore:
     """
 
     @classmethod
-    def list_chats(cls) -> List[Dict[str, Any]]:
-        """Returns all chat session summaries sorted by updated_at descending."""
+    def list_chats(cls, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Returns all chat session summaries sorted by updated_at descending, optionally filtered by session_id."""
         _ensure_dir()
         index_path = _get_index_path()
         chats = []
@@ -57,16 +57,19 @@ class ChatStore:
             except Exception:
                 chats = []
 
-        # If no chats exist, initialize the default first chat
+        if session_id:
+            chats = [c for c in chats if c.get("session_id") == session_id]
+
+        # If no chats exist for this session, initialize the default first chat
         if not chats:
-            first_chat = cls.create_chat(title="New Chat")
+            first_chat = cls.create_chat(title="New Chat", session_id=session_id)
             return [first_chat]
 
         return sorted(chats, key=lambda x: x.get("updated_at", ""), reverse=True)
 
     @classmethod
-    def create_chat(cls, title: str = "New Chat") -> Dict[str, Any]:
-        """Creates and persists a new unique chat session."""
+    def create_chat(cls, title: str = "New Chat", session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Creates and persists a new unique chat session associated with an optional session_id."""
         _ensure_dir()
         chat_id = f"chat_{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
         now_iso = datetime.now().isoformat()
@@ -74,6 +77,7 @@ class ChatStore:
         chat_data = {
             "id": chat_id,
             "title": title.strip() or "New Chat",
+            "session_id": session_id,
             "created_at": now_iso,
             "updated_at": now_iso,
             "messages": []
@@ -88,6 +92,7 @@ class ChatStore:
         chats.insert(0, {
             "id": chat_id,
             "title": chat_data["title"],
+            "session_id": session_id,
             "created_at": now_iso,
             "updated_at": now_iso,
             "message_count": 0
@@ -97,8 +102,11 @@ class ChatStore:
         return chat_data
 
     @classmethod
-    def get_chat(cls, chat_id: str) -> Optional[Dict[str, Any]]:
-        """Fetches full chat session including message history."""
+    def get_chat(cls, chat_id: str, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Fetches full chat session including message history.
+        Enforces session ownership: if session_id is provided, chats belonging to other sessions return None.
+        """
         if not chat_id:
             return None
         chat_path = _get_chat_path(chat_id)
@@ -106,14 +114,22 @@ class ChatStore:
             return None
         try:
             with open(chat_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                chat_data = json.load(f)
+            
+            # Enforce session isolation if session_id is specified
+            if session_id:
+                chat_session = chat_data.get("session_id")
+                if chat_session and chat_session != session_id:
+                    return None
+
+            return chat_data
         except Exception:
             return None
 
     @classmethod
-    def update_chat_title(cls, chat_id: str, title: str) -> Optional[Dict[str, Any]]:
-        """Renames a specific chat session."""
-        chat_data = cls.get_chat(chat_id)
+    def update_chat_title(cls, chat_id: str, title: str, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Renames a specific chat session if owned by the active session."""
+        chat_data = cls.get_chat(chat_id, session_id=session_id)
         if not chat_data:
             return None
 
@@ -138,8 +154,12 @@ class ChatStore:
         return chat_data
 
     @classmethod
-    def delete_chat(cls, chat_id: str) -> bool:
-        """Deletes a chat session file and removes it from the index."""
+    def delete_chat(cls, chat_id: str, session_id: Optional[str] = None) -> bool:
+        """Deletes a chat session file and removes it from the index if owned by the active session."""
+        chat_data = cls.get_chat(chat_id, session_id=session_id)
+        if not chat_data:
+            return False
+
         chat_path = _get_chat_path(chat_id)
         if os.path.exists(chat_path):
             try:
@@ -153,11 +173,11 @@ class ChatStore:
         return True
 
     @classmethod
-    def add_message(cls, chat_id: str, role: str, content: str, extra_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def add_message(cls, chat_id: str, role: str, content: str, extra_data: Optional[Dict[str, Any]] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Appends a message to the specified chat session and updates metadata."""
-        chat_data = cls.get_chat(chat_id)
+        chat_data = cls.get_chat(chat_id, session_id=session_id)
         if not chat_data:
-            chat_data = cls.create_chat(title="New Chat")
+            chat_data = cls.create_chat(title="New Chat", session_id=session_id)
             chat_id = chat_data["id"]
 
         now_iso = datetime.now().isoformat()
@@ -198,6 +218,7 @@ class ChatStore:
             chats.insert(0, {
                 "id": chat_id,
                 "title": chat_data["title"],
+                "session_id": session_id,
                 "created_at": chat_data.get("created_at", now_iso),
                 "updated_at": now_iso,
                 "message_count": len(chat_data["messages"])
@@ -207,9 +228,9 @@ class ChatStore:
         return message_obj
 
     @classmethod
-    def clear_messages(cls, chat_id: str) -> bool:
-        """Clears message history of a chat without deleting the session."""
-        chat_data = cls.get_chat(chat_id)
+    def clear_messages(cls, chat_id: str, session_id: Optional[str] = None) -> bool:
+        """Clears message history of a chat without deleting the session if owned by the active session."""
+        chat_data = cls.get_chat(chat_id, session_id=session_id)
         if not chat_data:
             return False
 
