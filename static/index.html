@@ -27,40 +27,49 @@
 </head>
 <body class="dark-theme">
     <div class="app-layout">
+        <!-- Mobile Backdrop Overlays -->
+        <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+        <div id="chat-sessions-backdrop" class="chat-sessions-backdrop"></div>
+
         <!-- Sidebar Navigation -->
-        <aside class="sidebar">
+        <aside class="sidebar" id="main-sidebar">
             <div class="brand">
-                <div class="brand-icon">
-                    <i data-lucide="car"></i>
+                <div class="brand-left">
+                    <div class="brand-icon">
+                        <i data-lucide="car"></i>
+                    </div>
+                    <div class="brand-text">
+                        <h2>OLA DataAgent</h2>
+                        <span class="badge-ai">Multi-Agent AI</span>
+                    </div>
                 </div>
-                <div class="brand-text">
-                    <h2>OLA DataAgent</h2>
-                    <span class="badge-ai">Multi-Agent AI</span>
-                </div>
+                <button id="btn-sidebar-close" class="btn-sidebar-close" aria-label="Close navigation sidebar" title="Close Navigation">
+                    <i data-lucide="x"></i>
+                </button>
             </div>
 
             <nav class="nav-menu">
-                <button class="nav-item active" data-tab="chat-view">
+                <button class="nav-item active" data-tab="chat-view" title="AI Chat Studio">
                     <i data-lucide="message-square"></i>
                     <span>AI Chat Studio</span>
                 </button>
-                <button class="nav-item" data-tab="overview-view">
+                <button class="nav-item" data-tab="overview-view" title="Analytics KPI">
                     <i data-lucide="bar-chart-3"></i>
                     <span>Analytics KPI</span>
                 </button>
-                <button class="nav-item" data-tab="db-view">
+                <button class="nav-item" data-tab="db-view" title="Database Explorer">
                     <i data-lucide="database"></i>
                     <span>Database Explorer</span>
                 </button>
-                <button class="nav-item" data-tab="etl-view">
+                <button class="nav-item" data-tab="etl-view" title="Weather ETL Studio">
                     <i data-lucide="cloud-sun"></i>
                     <span>Weather ETL Studio</span>
                 </button>
-                <button class="nav-item" data-tab="import-view">
+                <button class="nav-item" data-tab="import-view" title="Data Import">
                     <i data-lucide="upload-cloud"></i>
                     <span>Data Import</span>
                 </button>
-                <button class="nav-item" data-tab="architecture-view">
+                <button class="nav-item" data-tab="architecture-view" title="Agent Architecture">
                     <i data-lucide="network"></i>
                     <span>Agent Architecture</span>
                 </button>
@@ -78,19 +87,24 @@
         </aside>
 
         <!-- Main Content Area -->
-        <main class="main-content">
+        <main class="main-content" id="main-content-area">
             <!-- Top Header -->
             <header class="top-header">
                 <div class="header-left">
-                    <h1 id="page-title">AI Chat Studio</h1>
-                    <p id="page-description">Ask natural language questions to query OLA ride data, correlate with Open-Meteo weather, or trigger ETL pipelines.</p>
+                    <button id="btn-sidebar-toggle" class="btn-sidebar-toggle" aria-label="Toggle navigation menu" title="Toggle navigation sidebar">
+                        <i data-lucide="menu"></i>
+                    </button>
+                    <div class="header-title-group">
+                        <h1 id="page-title">AI Chat Studio</h1>
+                        <p id="page-description">Ask natural language questions to query OLA ride data, correlate with Open-Meteo weather, or trigger ETL pipelines.</p>
+                    </div>
                 </div>
                 <div class="header-right">
                     <div class="badge-tag">
                         <i data-lucide="cpu"></i>
                         <span>Groq + Gemini</span>
                     </div>
-                    <div class="badge-tag">
+                    <div class="badge-tag hide-on-mobile">
                         <i data-lucide="shield-check"></i>
                         <span>LLM Security Judge Active</span>
                     </div>
@@ -106,6 +120,9 @@
                             <button id="btn-new-chat" class="btn-primary-new-chat" title="Start a new conversation">
                                 <i data-lucide="plus"></i> <span>New Chat</span>
                             </button>
+                            <button id="btn-close-chat-sessions" class="btn-close-chat-sessions" aria-label="Close recent chats" title="Close Recent Chats">
+                                <i data-lucide="x"></i>
+                            </button>
                         </div>
                         <div class="chat-sidebar-section-title">
                             <span>Recent Chats</span>
@@ -120,6 +137,10 @@
                         <!-- Chat Management Top Header -->
                         <div class="chat-active-bar">
                             <div class="chat-title-wrapper">
+                                <button id="btn-toggle-chat-sessions" class="btn-chat-sessions-toggle" aria-label="View recent chats" title="View Recent Chats">
+                                    <i data-lucide="history"></i>
+                                    <span>Chats</span>
+                                </button>
                                 <div class="chat-title-display" id="chat-title-display">
                                     <span class="chat-active-bullet">●</span>
                                     <h3 id="current-chat-title">New Chat</h3>
@@ -129,8 +150,8 @@
                                 </div>
                                 <div class="chat-rename-form hidden" id="chat-rename-form">
                                     <input type="text" id="chat-rename-input" class="chat-rename-input" placeholder="Enter chat title..." maxlength="60">
-                                    <button id="btn-save-rename" class="btn-save-rename"><i data-lucide="check"></i></button>
-                                    <button id="btn-cancel-rename" class="btn-cancel-rename"><i data-lucide="x"></i></button>
+                                    <button id="btn-save-rename" class="btn-save-rename" aria-label="Save title"><i data-lucide="check"></i></button>
+                                    <button id="btn-cancel-rename" class="btn-cancel-rename" aria-label="Cancel rename"><i data-lucide="x"></i></button>
                                 </div>
                             </div>
                             <div class="chat-toolbar-actions">

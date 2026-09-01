@@ -16,13 +16,109 @@ let activeChartInstances = {};
 const CHAT_STORAGE_KEY = 'ola_ai_data_agent_chat_v1';
 
 /* ==========================================================================
-   1. NAVIGATION & TAB SWITCHING
+   1. NAVIGATION & RESPONSIVE DRAWER MANAGEMENT
    ========================================================================== */
+
+function closeMobileSidebar() {
+    const sidebar = document.getElementById('main-sidebar');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (sidebar) sidebar.classList.remove('sidebar-open');
+    if (backdrop) backdrop.classList.remove('active');
+}
+
+function openMobileSidebar() {
+    const sidebar = document.getElementById('main-sidebar');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (sidebar) sidebar.classList.add('sidebar-open');
+    if (backdrop) backdrop.classList.add('active');
+}
+
+function toggleSidebar() {
+    if (window.innerWidth <= 768) {
+        const sidebar = document.getElementById('main-sidebar');
+        if (sidebar && sidebar.classList.contains('sidebar-open')) {
+            closeMobileSidebar();
+        } else {
+            openMobileSidebar();
+        }
+    } else {
+        const appLayout = document.querySelector('.app-layout');
+        if (appLayout) {
+            appLayout.classList.toggle('sidebar-collapsed');
+        }
+    }
+}
+
+function closeMobileChatSessions() {
+    const chatSidebar = document.getElementById('chat-sessions-sidebar');
+    const backdrop = document.getElementById('chat-sessions-backdrop');
+    if (chatSidebar) chatSidebar.classList.remove('chat-sessions-open');
+    if (backdrop) backdrop.classList.remove('active');
+}
+
+function openMobileChatSessions() {
+    const chatSidebar = document.getElementById('chat-sessions-sidebar');
+    const backdrop = document.getElementById('chat-sessions-backdrop');
+    if (chatSidebar) chatSidebar.classList.add('chat-sessions-open');
+    if (backdrop) backdrop.classList.add('active');
+}
+
+function toggleChatSessions() {
+    const chatSidebar = document.getElementById('chat-sessions-sidebar');
+    if (chatSidebar && chatSidebar.classList.contains('chat-sessions-open')) {
+        closeMobileChatSessions();
+    } else {
+        openMobileChatSessions();
+    }
+}
+
 function initNavigation() {
     const navItems = document.querySelectorAll('.nav-item');
     const tabPanes = document.querySelectorAll('.tab-pane');
     const pageTitle = document.getElementById('page-title');
     const pageDesc = document.getElementById('page-description');
+
+    // Sidebar toggles & backdrops
+    const btnSidebarToggle = document.getElementById('btn-sidebar-toggle');
+    const btnSidebarClose = document.getElementById('btn-sidebar-close');
+    const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+
+    // Chat sessions drawer toggles & backdrops
+    const btnToggleChatSessions = document.getElementById('btn-toggle-chat-sessions');
+    const btnCloseChatSessions = document.getElementById('btn-close-chat-sessions');
+    const chatSessionsBackdrop = document.getElementById('chat-sessions-backdrop');
+
+    if (btnSidebarToggle) {
+        btnSidebarToggle.addEventListener('click', () => toggleSidebar());
+    }
+
+    if (btnSidebarClose) {
+        btnSidebarClose.addEventListener('click', () => closeMobileSidebar());
+    }
+
+    if (sidebarBackdrop) {
+        sidebarBackdrop.addEventListener('click', () => closeMobileSidebar());
+    }
+
+    if (btnToggleChatSessions) {
+        btnToggleChatSessions.addEventListener('click', () => toggleChatSessions());
+    }
+
+    if (btnCloseChatSessions) {
+        btnCloseChatSessions.addEventListener('click', () => closeMobileChatSessions());
+    }
+
+    if (chatSessionsBackdrop) {
+        chatSessionsBackdrop.addEventListener('click', () => closeMobileChatSessions());
+    }
+
+    // Keyboard accessibility (Escape key closes open drawers)
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            closeMobileSidebar();
+            closeMobileChatSessions();
+        }
+    });
 
     const tabDescriptions = {
         'chat-view': {
@@ -66,6 +162,9 @@ function initNavigation() {
                 pageTitle.textContent = tabDescriptions[targetTab].title;
                 pageDesc.textContent = tabDescriptions[targetTab].desc;
             }
+
+            // Close mobile navigation drawer upon selecting tab
+            closeMobileSidebar();
 
             // Trigger data load when switching tabs
             if (targetTab === 'overview-view') {
@@ -315,6 +414,7 @@ async function switchChat(chatId) {
     activeChatId = chatId;
     localStorage.setItem('ola_active_chat_id', chatId);
     highlightActiveSessionInList();
+    closeMobileChatSessions();
 
     const messagesArea = document.getElementById('messages-area');
     const titleEl = document.getElementById('current-chat-title');
@@ -348,21 +448,22 @@ async function switchChat(chatId) {
                     route: 'sql',
                     answer: msg.content,
                     is_safe: 'Yes',
-                    sql_query: msg.extra ? msg.extra.sql_query : '',
-                    columns: msg.extra ? msg.extra.columns : [],
-                    rows: msg.extra ? msg.extra.rows : [],
-                    chart: msg.extra ? msg.extra.chart : { can_chart: false }
+                    sql_query: '',
+                    execution_result: null,
+                    reasoning_steps: []
                 };
                 renderAgentResponse(responseData, timeStr);
             }
         });
 
+        messagesArea.scrollTop = messagesArea.scrollHeight;
     } catch (err) {
         messagesArea.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">Error loading chat: ${escapeHtml(err.message)}</p>`;
     }
 }
 
 async function createNewChat() {
+    closeMobileChatSessions();
     try {
         const res = await fetch('/api/chats', {
             method: 'POST',
@@ -744,6 +845,15 @@ function isRateColumn(colName) {
     return col.includes('rate') || col.includes('percent') || col.includes('pct');
 }
 
+function formatRateValue(num) {
+    if (num === null || num === undefined || isNaN(Number(num))) return 'N/A';
+    let n = Number(num);
+    if (n > 0 && n <= 1.0) {
+        n = n * 100.0;
+    }
+    return `${n.toFixed(2)}%`;
+}
+
 function isCurrencyColumn(colName) {
     if (!colName) return false;
     const col = String(colName).toLowerCase().trim();
@@ -834,7 +944,7 @@ function formatTableCell(val, colName) {
         if (isRankColumn(colName)) {
             return `<span style="font-family: var(--font-mono); font-weight: 500;">${Number.isInteger(num) ? num : Math.round(num)}</span>`;
         } else if (isRateColumn(colName)) {
-            return `<span style="font-family: var(--font-mono); font-weight: 500;">${num.toFixed(2)}%</span>`;
+            return `<span style="font-family: var(--font-mono); font-weight: 500;">${formatRateValue(num)}</span>`;
         } else if (isCurrencyColumn(colName)) {
             return `<span style="font-family: var(--font-mono); color: #34D399;">₹${num.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>`;
         } else if (col.includes('rating') || col.includes('score')) {
@@ -1002,7 +1112,7 @@ function renderDynamicChart(canvasId, chartConfig) {
                                     if (isRankColumn(key)) {
                                         formattedVal = Number.isInteger(val) ? val : Math.round(val);
                                     } else if (isRateColumn(key)) {
-                                        formattedVal = `${val.toFixed(2)}%`;
+                                        formattedVal = formatRateValue(val);
                                     } else if (isCurrencyColumn(key)) {
                                         formattedVal = `₹${val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
                                     } else {
@@ -1016,7 +1126,7 @@ function renderDynamicChart(canvasId, chartConfig) {
                         label: function(context) {
                             if (chartConfig.raw_records && chartConfig.raw_records.length) return '';
                             const val = context.parsed.y !== undefined ? context.parsed.y : context.parsed;
-                            if (isRate) return ` ${context.dataset.label || 'Rate'}: ${Number(val).toFixed(2)}%`;
+                            if (isRate) return ` ${context.dataset.label || 'Rate'}: ${formatRateValue(val)}`;
                             if (isCurrency) return ` ${context.dataset.label || 'Amount'}: ₹${Number(val).toLocaleString()}`;
                             return ` ${context.dataset.label || 'Value'}: ${Number(val).toLocaleString()}`;
                         }
