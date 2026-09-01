@@ -33,3 +33,6 @@ data/chats/
 
 # UV lock (optional - uncomment if you want to track it)
 # uv.lock
+
+# Local PostgreSQL backups
+*.dump
