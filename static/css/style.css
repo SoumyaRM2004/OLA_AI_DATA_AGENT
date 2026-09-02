@@ -985,6 +985,121 @@ html, body {
     margin-bottom: 4px;
 }
 
+/* ----------------- Thinking State Polish ----------------- */
+.thinking-card {
+    border-color: rgba(16, 185, 129, 0.25);
+    background: linear-gradient(135deg, rgba(17, 24, 39, 0.85), rgba(6, 182, 212, 0.05));
+    animation: thinkingFadeIn 0.2s ease;
+}
+
+@keyframes thinkingFadeIn {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.thinking-badge {
+    font-size: 0.74rem;
+    font-weight: 500;
+    color: var(--primary-emerald);
+    display: inline-flex;
+    align-items: center;
+    background: rgba(16, 185, 129, 0.1);
+    padding: 1px 7px;
+    border-radius: 12px;
+    border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.thinking-dots {
+    display: inline-flex;
+    margin-left: 1px;
+    letter-spacing: 1px;
+}
+
+.thinking-dots span {
+    animation: thinkingDotBlink 1.4s infinite both;
+    font-weight: 700;
+}
+
+.thinking-dots span:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.thinking-dots span:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+@keyframes thinkingDotBlink {
+    0%, 80%, 100% {
+        opacity: 0.2;
+        transform: scale(0.9);
+    }
+    40% {
+        opacity: 1;
+        transform: scale(1.1);
+    }
+}
+
+.thinking-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 2px 0;
+}
+
+.thinking-pulse-ring {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--primary-emerald);
+    box-shadow: 0 0 0 rgba(16, 185, 129, 0.5);
+    animation: pulseRing 1.8s infinite ease-out;
+    flex-shrink: 0;
+}
+
+@keyframes pulseRing {
+    0% {
+        transform: scale(0.9);
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
+    }
+    70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
+    }
+    100% {
+        transform: scale(0.9);
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    }
+}
+
+.thinking-status-text {
+    color: var(--accent-cyan);
+    font-size: 0.85rem;
+    line-height: 1.4;
+}
+
+/* ----------------- Clean Error Card Styles ----------------- */
+.message-card.error-card {
+    border-color: rgba(239, 68, 68, 0.25);
+    background: linear-gradient(135deg, rgba(31, 20, 25, 0.65), rgba(17, 24, 39, 0.85));
+}
+
+.error-avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.error-message-body p {
+    color: #F87171;
+    font-size: 0.88rem;
+    line-height: 1.5;
+    margin: 0;
+}
+
 /* Agent Reasoning Pipeline Accordion */
 .agent-pipeline-box {
     margin: 12px 0;

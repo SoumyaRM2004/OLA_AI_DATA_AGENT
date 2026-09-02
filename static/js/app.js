@@ -334,8 +334,21 @@ async function initChat() {
                     body: JSON.stringify({ message, chat_id: activeChatId })
                 });
 
-                const data = await response.json();
                 removeMessage(loadingId);
+
+                if (!response.ok) {
+                    let serverMsg = "Something went wrong on the server. Please try again in a moment.";
+                    try {
+                        const errData = await response.json();
+                        if (errData && errData.detail && typeof errData.detail === 'string') {
+                            serverMsg = errData.detail;
+                        }
+                    } catch (_) {}
+                    appendErrorCard('server', serverMsg);
+                    return;
+                }
+
+                const data = await response.json();
 
                 if (data.chat_id) {
                     activeChatId = data.chat_id;
@@ -354,7 +367,20 @@ async function initChat() {
 
             } catch (err) {
                 removeMessage(loadingId);
-                appendErrorMessage(`Failed to communicate with agent server: ${err.message}`);
+                const isOffline = (typeof navigator !== 'undefined' && navigator.onLine === false);
+                const isNetworkFailure = isOffline || err.name === 'TypeError' || (err.message && (
+                    err.message.toLowerCase().includes('fetch') ||
+                    err.message.toLowerCase().includes('network') ||
+                    err.message.toLowerCase().includes('abort') ||
+                    err.message.toLowerCase().includes('failed') ||
+                    err.message.toLowerCase().includes('connection')
+                ));
+
+                if (isNetworkFailure) {
+                    appendErrorCard('network', "Connection lost. Please check your internet connection and try again.");
+                } else {
+                    appendErrorCard('server', "Something went wrong on the server. Please try again in a moment.");
+                }
             }
         });
     }
@@ -489,7 +515,7 @@ async function switchChat(chatId) {
 
         messagesArea.scrollTop = messagesArea.scrollHeight;
     } catch (err) {
-        messagesArea.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">Error loading chat: ${escapeHtml(err.message)}</p>`;
+        messagesArea.innerHTML = `<p class="placeholder-text" style="color: var(--accent-red);">Unable to load conversation. Please check your connection and try again.</p>`;
     }
 }
 
@@ -662,21 +688,26 @@ function appendUserMessage(text, timeStr = null) {
 function appendLoadingMessage(id) {
     const messagesArea = document.getElementById('messages-area');
     if (!messagesArea) return;
+
+    // Remove any existing loading indicators to avoid duplicates
+    const existing = messagesArea.querySelectorAll('.thinking-card');
+    existing.forEach(el => el.remove());
+
     const card = document.createElement('div');
     card.id = id;
-    card.className = 'message-card agent-message';
+    card.className = 'message-card agent-message thinking-card';
     card.innerHTML = `
         <div class="message-header">
-            <div class="avatar agent-avatar"><i data-lucide="bot"></i></div>
+            <div class="avatar agent-avatar thinking-avatar"><i data-lucide="bot"></i></div>
             <div class="message-meta">
                 <span class="sender-name">OLA AI Data Agent</span>
-                <span class="message-time">Thinking...</span>
+                <span class="thinking-badge">Thinking<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span>
             </div>
         </div>
         <div class="message-body">
-            <div style="display: flex; align-items: center; gap: 10px; color: var(--accent-cyan);">
-                <div class="loading-spinner"></div>
-                <span>Querying live PostgreSQL, orchestrating agents & verifying security policies...</span>
+            <div class="thinking-status">
+                <div class="thinking-pulse-ring"></div>
+                <span class="thinking-status-text">Querying live PostgreSQL, orchestrating agents & verifying security policies...</span>
             </div>
         </div>
     `;
@@ -688,27 +719,61 @@ function appendLoadingMessage(id) {
 function removeMessage(id) {
     const el = document.getElementById(id);
     if (el) el.remove();
+    // Safety cleanup: remove any remaining thinking cards with this id or rogue thinking elements
+    const messagesArea = document.getElementById('messages-area');
+    if (messagesArea) {
+        const remaining = messagesArea.querySelectorAll('.thinking-card');
+        remaining.forEach(r => {
+            if (r.id === id) r.remove();
+        });
+    }
 }
 
-function appendErrorMessage(errorText) {
+function appendErrorCard(type, messageText) {
     const messagesArea = document.getElementById('messages-area');
     if (!messagesArea) return;
     const card = document.createElement('div');
-    card.className = 'message-card agent-message';
+    card.className = 'message-card agent-message error-card';
+
+    const isNetwork = type === 'network';
+    const iconName = isNetwork ? 'wifi-off' : 'alert-triangle';
+    const title = isNetwork ? 'Connection lost' : 'Something went wrong';
+    const avatarBg = isNetwork ? 'rgba(239, 68, 68, 0.15)' : 'rgba(245, 158, 11, 0.15)';
+    const avatarColor = isNetwork ? 'var(--accent-red)' : 'var(--accent-amber)';
+    const defaultMsg = isNetwork
+        ? 'Please check your internet connection and try again.'
+        : 'Please try again in a moment.';
+    const bodyText = messageText || defaultMsg;
+
     card.innerHTML = `
         <div class="message-header">
-            <div class="avatar agent-avatar" style="background: var(--accent-red);"><i data-lucide="alert-triangle"></i></div>
+            <div class="avatar error-avatar" style="background: ${avatarBg}; color: ${avatarColor}; border: 1px solid ${avatarColor};">
+                <i data-lucide="${iconName}"></i>
+            </div>
             <div class="message-meta">
-                <span class="sender-name">Agent Error</span>
+                <span class="sender-name">${escapeHtml(title)}</span>
+                <span class="message-time">Just now</span>
             </div>
         </div>
-        <div class="message-body" style="color: #FCA5A5;">
-            <p>${escapeHtml(errorText)}</p>
+        <div class="message-body error-message-body">
+            <p>${escapeHtml(bodyText)}</p>
         </div>
     `;
     messagesArea.appendChild(card);
     messagesArea.scrollTop = messagesArea.scrollHeight;
     if (window.lucide) lucide.createIcons();
+}
+
+function appendErrorMessage(errorText) {
+    const isOffline = (typeof navigator !== 'undefined' && navigator.onLine === false);
+    const errStr = String(errorText || '').toLowerCase();
+    const isNetwork = isOffline || errStr.includes('fetch') || errStr.includes('network') || errStr.includes('connection');
+
+    if (isNetwork) {
+        appendErrorCard('network', 'Connection lost. Please check your internet connection and try again.');
+    } else {
+        appendErrorCard('server', errorText || 'Something went wrong on the server. Please try again in a moment.');
+    }
 }
 
 function renderAgentResponse(data, timeStr = null) {
