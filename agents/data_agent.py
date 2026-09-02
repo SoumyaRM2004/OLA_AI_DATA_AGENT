@@ -77,7 +77,12 @@ def sql_node(state: DataAgentSchema) -> DataAgentSchema:
         "data_dicts": [],
         "final_answer": "",
         "error": "",
-        "session_id": state.session_id
+        "session_id": state.session_id,
+        "structured_intent": None,
+        "semantic_validation_attempts": 0,
+        "semantic_issues": [],
+        "semantic_correction_instruction": "",
+        "is_semantically_valid": True
     }
 
     response = sql_analyst.invoke(input_schema)
@@ -94,7 +99,10 @@ def sql_node(state: DataAgentSchema) -> DataAgentSchema:
         "data_dicts": response.get("data_dicts", []),
         "execution_result": response.get("sql_query_execution_result", ""),
         "final_answer": response.get("final_answer", ""),
-        "error": response.get("error", "")
+        "error": response.get("error", ""),
+        "structured_intent": response.get("structured_intent"),
+        "is_semantically_valid": response.get("is_semantically_valid", True),
+        "semantic_issues": response.get("semantic_issues", [])
     }
 
     state.final_answer = response.get("final_answer", "")

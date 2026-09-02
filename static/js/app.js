@@ -828,11 +828,18 @@ function renderAgentResponse(data, timeStr = null) {
 
     // 3. Visualization Container (Chart / KPI Cards + Interactive Table)
     const uniqueVisId = 'vis-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
-    const hasData = data.rows && data.rows.length > 0;
-    const canChart = data.chart && data.chart.can_chart;
-    const chartMode = data.chart ? data.chart.mode : 'none';
+    const hasData = (data.rows && data.rows.length > 0) || (data.data_rows && data.data_rows.length > 0);
+    const columns = data.columns || data.data_columns || [];
+    const rows = data.rows || data.data_rows || [];
+    
+    // Choose intelligent visualization & KPIs based on returned dataset
+    const smartVis = buildSmartVisualization(data);
+    const kpis = smartVis.kpis || [];
+    const keyInsight = smartVis.keyInsight || '';
+    const finalChart = smartVis.chart;
+    const canChart = !!(finalChart && finalChart.can_chart);
 
-    if (hasData || canChart) {
+    if (hasData || canChart || kpis.length > 0) {
         html += `
             <div class="data-vis-container" id="${uniqueVisId}">
                 <div class="vis-header">
@@ -841,34 +848,25 @@ function renderAgentResponse(data, timeStr = null) {
                 </div>
         `;
 
-        // 3A. KPI Cards Mode (Single row with multiple metrics)
-        if (canChart && chartMode === 'kpi_cards' && data.chart.kpis) {
+        // 3A. Smart KPI Summary Cards Row
+        if (kpis.length > 0) {
             html += `
-                <div class="vis-kpi-container">
-                    <div class="vis-kpi-grid">
-                        ${data.chart.kpis.map(k => `
-                            <div class="vis-kpi-card">
+                <div class="vis-kpi-grid">
+                    ${kpis.map(k => `
+                        <div class="vis-kpi-card">
+                            <div class="vis-kpi-top">
                                 <span class="vis-kpi-label">${escapeHtml(k.label)}</span>
-                                <span class="vis-kpi-value">${escapeHtml(k.value)}</span>
+                                <i data-lucide="${k.icon || 'trending-up'}" class="vis-kpi-icon"></i>
                             </div>
-                        `).join('')}
-                    </div>
-                    ${data.chart.comparison ? `
-                        <div class="vis-kpi-comparison">
-                            <div class="kpi-comp-header">
-                                <span class="kpi-comp-title"><i data-lucide="pie-chart"></i> ${escapeHtml(data.chart.comparison.numerator_label)} vs ${escapeHtml(data.chart.comparison.denominator_label)}</span>
-                                <span class="kpi-comp-badge">${escapeHtml(data.chart.comparison.ratio_text)}</span>
-                            </div>
-                            <div class="kpi-comp-bar-track">
-                                <div class="kpi-comp-bar-fill" style="width: ${Math.min(100, Math.max(0, data.chart.comparison.percentage))}%;"></div>
-                            </div>
+                            <span class="vis-kpi-value">${escapeHtml(k.value)}</span>
                         </div>
-                    ` : ''}
+                    `).join('')}
                 </div>
             `;
         }
-        // 3B. Standard Chart Mode (Bar, Line, Doughnut, Scatter, Grouped Bar)
-        else if (canChart && (chartMode === 'chart' || !chartMode)) {
+
+        // 3B. Dynamic Chart Mode (Horizontal Bar, Line, Doughnut, etc.)
+        if (canChart) {
             html += `
                 <div class="vis-chart-box">
                     <canvas id="chart-${uniqueVisId}"></canvas>
@@ -876,20 +874,30 @@ function renderAgentResponse(data, timeStr = null) {
             `;
         }
 
-        // 3C. Interactive Result Table (Always displayed for tabular data)
+        // 3C. Factual Key Insight Box
+        if (keyInsight) {
+            html += `
+                <div class="vis-insight-box">
+                    <i data-lucide="lightbulb"></i>
+                    <span><strong>Key Insight:</strong> ${escapeHtml(keyInsight)}</span>
+                </div>
+            `;
+        }
+
+        // 3D. Interactive Result Table (Always displayed for tabular data)
         if (hasData) {
             html += `
                 <div class="table-responsive">
                     <table class="data-table" id="table-${uniqueVisId}">
                         <thead>
                             <tr>
-                                ${data.columns.map(c => `<th>${escapeHtml(getCleanColumnName(c))}</th>`).join('')}
+                                ${columns.map(c => `<th>${escapeHtml(getCleanColumnName(c))}</th>`).join('')}
                             </tr>
                         </thead>
                         <tbody>
-                            ${data.rows.map(row => `
+                            ${rows.map(row => `
                                 <tr>
-                                    ${row.map((cell, idx) => `<td>${formatTableCell(cell, data.columns[idx])}</td>`).join('')}
+                                    ${row.map((cell, idx) => `<td>${formatTableCell(cell, columns[idx])}</td>`).join('')}
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -912,16 +920,16 @@ function renderAgentResponse(data, timeStr = null) {
     }
 
     // Render Chart if applicable
-    if (canChart && chartMode === 'chart') {
-        renderDynamicChart(`chart-${uniqueVisId}`, data.chart);
+    if (canChart) {
+        renderDynamicChart(`chart-${uniqueVisId}`, finalChart);
     }
 
     // Store data on table element for CSV download
     if (hasData) {
         const tableEl = document.getElementById(`table-${uniqueVisId}`);
         if (tableEl) {
-            tableEl._dataColumns = data.columns;
-            tableEl._dataRows = data.rows;
+            tableEl._dataColumns = columns;
+            tableEl._dataRows = rows;
         }
     }
 
@@ -934,10 +942,16 @@ function isRankColumn(colName) {
     return col === 'rank' || col.includes('_rank') || col.includes('rank_') || col.includes('ranking') || col.includes('position') || col.includes('row_number') || col.includes('dense_rank');
 }
 
+function isDiffPpColumn(colName) {
+    if (!colName) return false;
+    const col = String(colName).toLowerCase().trim();
+    return col.includes('diff_pp') || col.endsWith('_pp') || col.includes('rate_difference') || col.includes('diff_percentage') || col.includes('difference_vs_overall');
+}
+
 function isRateColumn(colName) {
     if (!colName) return false;
     const col = String(colName).toLowerCase().trim();
-    if (isRankColumn(col)) return false;
+    if (isRankColumn(col) || isDiffPpColumn(col)) return false;
     return col.includes('rate') || col.includes('percent') || col.includes('pct');
 }
 
@@ -973,9 +987,20 @@ function getCleanColumnName(colName) {
         "inactive_users": "Inactive Users",
         "total_rides": "Total Rides",
         "ride_count": "Ride Count",
-        "completed_rides": "Completed Rides",
-        "cancelled_rides": "Cancelled Rides",
+        "total_assigned_rides": "Total Assigned",
+        "assigned_rides": "Assigned Rides",
+        "total_assigned": "Total Assigned",
+        "completed_rides": "Completed",
+        "completed": "Completed",
+        "cancelled_rides": "Cancelled",
+        "cancelled": "Cancelled",
+        "driver_cancellation_count": "Driver Cancellations",
+        "completion_rate": "Completion Rate (%)",
         "cancellation_rate": "Cancellation Rate (%)",
+        "driver_cancellation_rate": "Driver Cancellation Rate (%)",
+        "overall_cancellation_rate": "Overall Cancellation Rate (%)",
+        "cancellation_rate_diff_pp": "Cancellation Diff (pp)",
+        "rate_difference_vs_overall": "Cancellation Diff (pp)",
         "percent_canceled_rainy": "Rainy Cancellation Rate (%)",
         "percent_canceled_non_rainy": "Non-Rainy Cancellation Rate (%)",
         "total_revenue": "Total Revenue",
@@ -1011,6 +1036,7 @@ function getCleanColumnName(colName) {
         "weather_code": "Weather Code"
     };
     if (map[col]) return map[col];
+    if (col.endsWith("_diff_pp") || col.endsWith("_pp")) return col.substring(0, col.lastIndexOf("_")).replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()) + " Diff (pp)";
     if (col.endsWith("_rank")) return col.substring(0, col.length - 5).replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()) + " Rank";
     if (col.startsWith("is_")) return col.substring(3).replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()) + " Status";
     if (col.endsWith("_count")) return col.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase());
@@ -1020,7 +1046,7 @@ function getCleanColumnName(colName) {
 
 function formatTableCell(val, colName) {
     if (val === null || val === undefined) return '<span style="color: #6B7280;">NULL</span>';
-    const col = (colName || '').toLowerCase();
+    const col = (colName || '').toLowerCase().trim();
     const strVal = String(val).trim();
 
     // 1. Boolean check
@@ -1034,11 +1060,27 @@ function formatTableCell(val, colName) {
         return isTrue ? '<span style="color: #10B981;">Yes</span>' : '<span style="color: #9CA3AF;">No</span>';
     }
 
-    // 2. Numeric formatting
+    // 2. Percentage Point Difference Check (e.g. cancellation_rate_diff_pp)
+    if (isDiffPpColumn(colName)) {
+        const num = Number(val);
+        if (!isNaN(num) && strVal !== '') {
+            if (num < 0) {
+                return `<span class="diff-tag diff-better">↓ ${Math.abs(num).toFixed(2)} pp below</span>`;
+            } else if (num > 0) {
+                return `<span class="diff-tag diff-worse">↑ +${num.toFixed(2)} pp above</span>`;
+            } else {
+                return `<span class="diff-tag diff-neutral">0.00 pp</span>`;
+            }
+        }
+    }
+
+    // 3. Numeric formatting
     const num = Number(val);
     if (!isNaN(num) && typeof val !== 'boolean' && strVal !== '') {
         if (isRankColumn(colName)) {
-            return `<span style="font-family: var(--font-mono); font-weight: 500;">${Number.isInteger(num) ? num : Math.round(num)}</span>`;
+            const rankNum = Number.isInteger(num) ? num : Math.round(num);
+            const badgeClass = rankNum === 1 ? 'rank-gold' : (rankNum === 2 ? 'rank-silver' : (rankNum === 3 ? 'rank-bronze' : ''));
+            return `<span class="rank-badge ${badgeClass}">#${rankNum}</span>`;
         } else if (isRateColumn(colName)) {
             return `<span style="font-family: var(--font-mono); font-weight: 500;">${formatRateValue(num)}</span>`;
         } else if (isCurrencyColumn(colName)) {
@@ -1047,6 +1089,8 @@ function formatTableCell(val, colName) {
             return `<span style="font-family: var(--font-mono); color: #FBBF24;">${num.toFixed(2)} ★</span>`;
         } else if (col.includes('surge') || col.includes('multiplier')) {
             return `<span style="font-family: var(--font-mono); color: #A78BFA;">${num.toFixed(2)}x</span>`;
+        } else if (col.endsWith('_id') || col === 'id') {
+            return `<span style="font-family: var(--font-mono); font-weight: 500; color: var(--text-main);">#${escapeHtml(strVal)}</span>`;
         } else if (Number.isInteger(num)) {
             return `<span style="font-family: var(--font-mono);">${num.toLocaleString()}</span>`;
         } else {
@@ -1054,8 +1098,271 @@ function formatTableCell(val, colName) {
         }
     }
 
-    // 3. Text fallback
+    // 4. Text fallback
     return escapeHtml(strVal);
+}
+
+function buildSmartVisualization(data) {
+    const columns = data.columns || data.data_columns || [];
+    const rows = data.rows || data.data_rows || [];
+    const rawRecords = data.data_dicts || (data.chart && data.chart.raw_records) || [];
+    
+    // Construct records array for tooltips
+    const records = (rawRecords && rawRecords.length) ? rawRecords : rows.map(r => {
+        const obj = {};
+        columns.forEach((c, idx) => { obj[c] = r[idx]; });
+        return obj;
+    });
+
+    // 1. Calculate Smart KPIs
+    const kpis = [];
+    if (rows.length > 0 && columns.length > 0) {
+        const lowerCols = columns.map(c => c.toLowerCase());
+        
+        // Entity count KPI
+        const driverIdx = lowerCols.indexOf('driver_id');
+        const riderIdx = lowerCols.indexOf('rider_id');
+        const userIdx = lowerCols.indexOf('user_id');
+        const cityIdx = lowerCols.indexOf('city');
+        const vehicleIdx = lowerCols.indexOf('vehicle_id');
+        
+        if (driverIdx !== -1) {
+            kpis.push({ label: 'Drivers Analyzed', value: rows.length.toLocaleString(), icon: 'users' });
+        } else if (riderIdx !== -1 || userIdx !== -1) {
+            kpis.push({ label: 'Users Analyzed', value: rows.length.toLocaleString(), icon: 'users' });
+        } else if (cityIdx !== -1) {
+            kpis.push({ label: 'Cities Analyzed', value: rows.length.toLocaleString(), icon: 'map-pin' });
+        } else if (vehicleIdx !== -1) {
+            kpis.push({ label: 'Vehicles Analyzed', value: rows.length.toLocaleString(), icon: 'car' });
+        }
+
+        // Sum KPIs
+        const assignedIdx = lowerCols.findIndex(c => c === 'total_assigned_rides' || c === 'assigned_rides' || c === 'total_assigned' || c === 'total_rides' || c === 'ride_count');
+        if (assignedIdx !== -1) {
+            const sumAssigned = rows.reduce((acc, r) => acc + (Number(r[assignedIdx]) || 0), 0);
+            if (sumAssigned > 0) {
+                const label = lowerCols[assignedIdx].includes('assigned') ? 'Total Assigned' : 'Total Rides';
+                kpis.push({ label, value: sumAssigned.toLocaleString(), icon: 'calendar' });
+            }
+        }
+
+        const completedIdx = lowerCols.findIndex(c => c === 'completed_rides' || c === 'completed');
+        if (completedIdx !== -1) {
+            const sumCompleted = rows.reduce((acc, r) => acc + (Number(r[completedIdx]) || 0), 0);
+            kpis.push({ label: 'Completed Rides', value: sumCompleted.toLocaleString(), icon: 'check-circle-2' });
+        }
+
+        const cancelledIdx = lowerCols.findIndex(c => c === 'driver_cancellation_count' || c === 'cancelled_rides' || c === 'cancelled');
+        if (cancelledIdx !== -1) {
+            const sumCancelled = rows.reduce((acc, r) => acc + (Number(r[cancelledIdx]) || 0), 0);
+            kpis.push({ label: 'Cancelled Rides', value: sumCancelled.toLocaleString(), icon: 'x-circle' });
+        }
+
+        const revenueIdx = lowerCols.findIndex(c => c === 'total_revenue' || c === 'revenue' || c === 'total_amount');
+        if (revenueIdx !== -1) {
+            const sumRevenue = rows.reduce((acc, r) => acc + (Number(r[revenueIdx]) || 0), 0);
+            kpis.push({ label: 'Total Revenue', value: '₹' + sumRevenue.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}), icon: 'dollar-sign' });
+        }
+
+        // Rate KPIs
+        const completionRateIdx = lowerCols.findIndex(c => c === 'completion_rate');
+        if (completionRateIdx !== -1) {
+            let avgRate = 0;
+            if (assignedIdx !== -1 && completedIdx !== -1) {
+                const sumAssigned = rows.reduce((acc, r) => acc + (Number(r[assignedIdx]) || 0), 0);
+                const sumCompleted = rows.reduce((acc, r) => acc + (Number(r[completedIdx]) || 0), 0);
+                avgRate = sumAssigned > 0 ? (sumCompleted / sumAssigned) : 0;
+            } else {
+                const sumRate = rows.reduce((acc, r) => acc + (Number(r[completionRateIdx]) || 0), 0);
+                avgRate = sumRate / rows.length;
+            }
+            const displayRate = (avgRate <= 1.0 ? avgRate * 100 : avgRate).toFixed(2) + '%';
+            kpis.push({ label: 'Avg Completion Rate', value: displayRate, icon: 'percent' });
+        }
+
+        const overallCancelIdx = lowerCols.findIndex(c => c === 'overall_cancellation_rate');
+        if (overallCancelIdx !== -1 && rows[0]) {
+            const rawVal = Number(rows[0][overallCancelIdx]);
+            if (!isNaN(rawVal)) {
+                const displayCancel = (rawVal <= 1.0 ? rawVal * 100 : rawVal).toFixed(2) + '%';
+                kpis.push({ label: 'Fleet Cancellation Benchmark', value: displayCancel, icon: 'trending-down' });
+            }
+        }
+    }
+
+    // 2. Calculate Factual Key Insight
+    let keyInsight = '';
+    if (rows.length > 0 && columns.length > 0) {
+        const lowerCols = columns.map(c => c.toLowerCase());
+        const completionRateIdx = lowerCols.findIndex(c => c === 'completion_rate');
+        const driverIdx = lowerCols.indexOf('driver_id');
+        const diffIdx = lowerCols.findIndex(c => isDiffPpColumn(c));
+
+        if (driverIdx !== -1 && completionRateIdx !== -1) {
+            const perfectCount = rows.filter(r => {
+                const val = Number(r[completionRateIdx]);
+                return val === 1 || val === 100 || val === 1.0;
+            }).length;
+            
+            let extra = '';
+            if (diffIdx !== -1) {
+                const belowBenchmark = rows.filter(r => Number(r[diffIdx]) < 0).length;
+                extra = `, with ${belowBenchmark} maintaining lower cancellation rates than the fleet benchmark`;
+            }
+            if (perfectCount > 0) {
+                keyInsight = `${perfectCount} of ${rows.length} analyzed drivers achieved a 100% ride completion rate${extra}.`;
+            } else {
+                keyInsight = `Analyzed ${rows.length} drivers ranked by ride completion rate${extra}.`;
+            }
+        } else if (lowerCols.includes('city') && (lowerCols.includes('total_rides') || lowerCols.includes('ride_count'))) {
+            const countIdx = lowerCols.findIndex(c => c === 'total_rides' || c === 'ride_count');
+            const cityIdx = lowerCols.indexOf('city');
+            if (countIdx !== -1 && cityIdx !== -1 && rows.length > 0) {
+                const sorted = [...rows].sort((a, b) => (Number(b[countIdx]) || 0) - (Number(a[countIdx]) || 0));
+                keyInsight = `${sorted[0][cityIdx]} recorded the highest volume with ${(Number(sorted[0][countIdx]) || 0).toLocaleString()} rides.`;
+            }
+        }
+    }
+
+    // 3. Smart Chart Selection
+    let chartConfig = null;
+    if (rows.length >= 2 && columns.length >= 2) {
+        const lowerCols = columns.map(c => c.toLowerCase());
+        
+        // CASE A: Driver Performance Query -> Horizontal Bar Chart
+        if (lowerCols.includes('driver_id')) {
+            const driverIdx = lowerCols.indexOf('driver_id');
+            const labels = rows.map(r => `Driver #${r[driverIdx]}`);
+            const completionRateIdx = lowerCols.indexOf('completion_rate');
+            const completedIdx = lowerCols.findIndex(c => c === 'completed_rides' || c === 'completed');
+
+            if (completionRateIdx !== -1) {
+                const rawValues = rows.map(r => {
+                    const v = Number(r[completionRateIdx]);
+                    return (v <= 1.0 && v > 0) ? +(v * 100).toFixed(2) : +v.toFixed(2);
+                });
+
+                chartConfig = {
+                    can_chart: true,
+                    type: 'horizontal_bar',
+                    title: 'Completion Rate by Driver',
+                    labels: labels,
+                    values: rawValues,
+                    metric_type: 'rate',
+                    raw_records: records,
+                    datasets: [{
+                        label: 'Completion Rate (%)',
+                        data: rawValues,
+                        backgroundColor: 'rgba(16, 185, 129, 0.75)',
+                        borderColor: '#10B981',
+                        borderWidth: 1.5,
+                        borderRadius: 6
+                    }]
+                };
+            } else if (completedIdx !== -1) {
+                const rawValues = rows.map(r => Number(r[completedIdx]) || 0);
+                chartConfig = {
+                    can_chart: true,
+                    type: 'horizontal_bar',
+                    title: 'Completed Rides by Driver',
+                    labels: labels,
+                    values: rawValues,
+                    raw_records: records,
+                    datasets: [{
+                        label: 'Completed Rides',
+                        data: rawValues,
+                        backgroundColor: 'rgba(6, 182, 212, 0.75)',
+                        borderColor: '#06B6D4',
+                        borderWidth: 1.5,
+                        borderRadius: 6
+                    }]
+                };
+            }
+        }
+        // CASE B: Time Series -> Line Chart
+        else if (lowerCols.some(c => c === 'month_start' || c === 'recorded_at' || c === 'requested_at' || c === 'date' || c === 'month' || c === 'signup_date' || c === 'day')) {
+            const timeColIdx = lowerCols.findIndex(c => c === 'month_start' || c === 'recorded_at' || c === 'requested_at' || c === 'date' || c === 'month' || c === 'signup_date' || c === 'day');
+            const labels = rows.map(r => {
+                const val = r[timeColIdx];
+                if (!val) return '';
+                if (String(val).includes('T') || String(val).includes('-')) {
+                    try {
+                        const d = new Date(val);
+                        if (!isNaN(d.getTime())) return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
+                    } catch (_) {}
+                }
+                return String(val);
+            });
+
+            const metricIdx = lowerCols.findIndex((c, idx) => idx !== timeColIdx && (typeof rows[0][idx] === 'number' || !isNaN(Number(rows[0][idx]))));
+            if (metricIdx !== -1) {
+                const isRate = isRateColumn(columns[metricIdx]);
+                const isCurr = isCurrencyColumn(columns[metricIdx]);
+                const rawValues = rows.map(r => {
+                    const v = Number(r[metricIdx]) || 0;
+                    return (isRate && v <= 1.0 && v > 0) ? +(v * 100).toFixed(2) : +v.toFixed(2);
+                });
+
+                chartConfig = {
+                    can_chart: true,
+                    type: 'line',
+                    title: `${getCleanColumnName(columns[metricIdx])} over Time`,
+                    labels: labels,
+                    values: rawValues,
+                    metric_type: isRate ? 'rate' : (isCurr ? 'currency' : 'number'),
+                    raw_records: records,
+                    datasets: [{
+                        label: getCleanColumnName(columns[metricIdx]),
+                        data: rawValues,
+                        borderColor: '#10B981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                        borderWidth: 2.5,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 4,
+                        pointHoverRadius: 6,
+                        pointBackgroundColor: '#10B981'
+                    }]
+                };
+            }
+        }
+        // CASE C: Category Comparison (City, Vehicle Type, Payment Method)
+        else if (lowerCols.some(c => c === 'city' || c === 'vehicle_type' || c === 'payment_method' || c === 'status' || c === 'user_type')) {
+            const catIdx = lowerCols.findIndex(c => c === 'city' || c === 'vehicle_type' || c === 'payment_method' || c === 'status' || c === 'user_type');
+            const labels = rows.map(r => String(r[catIdx]));
+            const metricIdx = lowerCols.findIndex((c, idx) => idx !== catIdx && (typeof rows[0][idx] === 'number' || !isNaN(Number(rows[0][idx]))));
+
+            if (metricIdx !== -1) {
+                const isRate = isRateColumn(columns[metricIdx]);
+                const isCurr = isCurrencyColumn(columns[metricIdx]);
+                const isDoughnut = rows.length <= 6 && !isRate;
+                const rawValues = rows.map(r => {
+                    const v = Number(r[metricIdx]) || 0;
+                    return (isRate && v <= 1.0 && v > 0) ? +(v * 100).toFixed(2) : +v.toFixed(2);
+                });
+
+                chartConfig = {
+                    can_chart: true,
+                    type: isDoughnut ? 'doughnut' : 'bar',
+                    title: `${getCleanColumnName(columns[metricIdx])} by ${getCleanColumnName(columns[catIdx])}`,
+                    labels: labels,
+                    values: rawValues,
+                    metric_type: isRate ? 'rate' : (isCurr ? 'currency' : 'number'),
+                    raw_records: records
+                };
+            }
+        }
+        // Fallback: use existing backend chart if valid, else null
+        else if (data.chart && data.chart.can_chart && data.chart.labels && data.chart.values) {
+            chartConfig = data.chart;
+        }
+    }
+
+    return {
+        kpis: kpis.slice(0, 5),
+        keyInsight: keyInsight,
+        chart: chartConfig
+    };
 }
 
 function renderDynamicChart(canvasId, chartConfig) {
@@ -1077,7 +1384,8 @@ function renderDynamicChart(canvasId, chartConfig) {
         { bg: 'rgba(168, 85, 247, 0.75)', border: '#A855F7' }  // Purple
     ];
 
-    const chartType = chartConfig.type === 'grouped_bar' ? 'bar' : (chartConfig.type || 'bar');
+    const isHorizontal = chartConfig.type === 'horizontal_bar' || chartConfig.indexAxis === 'y';
+    const chartType = isHorizontal ? 'bar' : (chartConfig.type === 'grouped_bar' ? 'bar' : (chartConfig.type || 'bar'));
     const isDoughnut = chartConfig.type === 'doughnut';
     const isLine = chartConfig.type === 'line';
     const isScatter = chartConfig.type === 'scatter';
@@ -1136,10 +1444,10 @@ function renderDynamicChart(canvasId, chartConfig) {
                 return {
                     label: ds.label || chartConfig.title || 'Metric',
                     data: ds.data || [],
-                    backgroundColor: color.bg,
-                    borderColor: color.border,
-                    borderWidth: 1.5,
-                    borderRadius: 6
+                    backgroundColor: ds.backgroundColor || color.bg,
+                    borderColor: ds.borderColor || color.border,
+                    borderWidth: ds.borderWidth || 1.5,
+                    borderRadius: ds.borderRadius || 6
                 };
             }
         });
@@ -1157,6 +1465,48 @@ function renderDynamicChart(canvasId, chartConfig) {
 
     const showLegend = isDoughnut || (chartDatasets.length > 1);
 
+    const scaleOptions = isDoughnut ? {} : (isHorizontal ? {
+        x: {
+            ticks: {
+                color: '#9CA3AF',
+                font: { family: 'Inter', size: 11 },
+                callback: function(value) {
+                    if (isRate) return value + '%';
+                    if (isCurrency) return '₹' + Number(value).toLocaleString();
+                    return Number(value).toLocaleString();
+                }
+            },
+            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+            min: 0,
+            max: isRate ? 100 : undefined
+        },
+        y: {
+            ticks: {
+                color: '#E5E7EB',
+                font: { family: 'Inter', size: 11, weight: '500' }
+            },
+            grid: { color: 'rgba(255, 255, 255, 0.05)' }
+        }
+    } : {
+        x: {
+            ticks: { color: '#9CA3AF', font: { family: 'Inter', size: 11 } },
+            grid: { color: 'rgba(255, 255, 255, 0.05)' }
+        },
+        y: {
+            ticks: {
+                color: '#9CA3AF',
+                font: { family: 'Inter', size: 11 },
+                callback: function(value) {
+                    if (isRate) return value + '%';
+                    if (isCurrency) return '₹' + Number(value).toLocaleString();
+                    return Number(value).toLocaleString();
+                }
+            },
+            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+            beginAtZero: true
+        }
+    });
+
     activeChartInstances[canvasId] = new Chart(ctx, {
         type: chartType,
         data: {
@@ -1164,6 +1514,7 @@ function renderDynamicChart(canvasId, chartConfig) {
             datasets: chartDatasets
         },
         options: {
+            indexAxis: isHorizontal ? 'y' : 'x',
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
@@ -1204,9 +1555,14 @@ function renderDynamicChart(canvasId, chartConfig) {
                                 if (val === null || val === undefined) continue;
                                 const cleanKey = getCleanColumnName(key);
                                 let formattedVal = val;
-                                if (typeof val === 'number') {
+                                if (isDiffPpColumn(key)) {
+                                    const n = Number(val);
+                                    if (!isNaN(n)) {
+                                        formattedVal = n < 0 ? `↓ ${Math.abs(n).toFixed(2)} pp below fleet` : (n > 0 ? `↑ +${n.toFixed(2)} pp above fleet` : '0.00 pp (Equal)');
+                                    }
+                                } else if (typeof val === 'number') {
                                     if (isRankColumn(key)) {
-                                        formattedVal = Number.isInteger(val) ? val : Math.round(val);
+                                        formattedVal = `#${Number.isInteger(val) ? val : Math.round(val)}`;
                                     } else if (isRateColumn(key)) {
                                         formattedVal = formatRateValue(val);
                                     } else if (isCurrencyColumn(key)) {
@@ -1221,7 +1577,7 @@ function renderDynamicChart(canvasId, chartConfig) {
                         },
                         label: function(context) {
                             if (chartConfig.raw_records && chartConfig.raw_records.length) return '';
-                            const val = context.parsed.y !== undefined ? context.parsed.y : context.parsed;
+                            const val = isHorizontal ? (context.parsed.x !== undefined ? context.parsed.x : context.parsed) : (context.parsed.y !== undefined ? context.parsed.y : context.parsed);
                             if (isRate) return ` ${context.dataset.label || 'Rate'}: ${formatRateValue(val)}`;
                             if (isCurrency) return ` ${context.dataset.label || 'Amount'}: ₹${Number(val).toLocaleString()}`;
                             return ` ${context.dataset.label || 'Value'}: ${Number(val).toLocaleString()}`;
@@ -1229,25 +1585,7 @@ function renderDynamicChart(canvasId, chartConfig) {
                     }
                 }
             },
-            scales: isDoughnut ? {} : {
-                x: {
-                    ticks: { color: '#9CA3AF', font: { family: 'Inter', size: 11 } },
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' }
-                },
-                y: {
-                    ticks: {
-                        color: '#9CA3AF',
-                        font: { family: 'Inter', size: 11 },
-                        callback: function(value) {
-                            if (isRate) return value + '%';
-                            if (isCurrency) return '₹' + Number(value).toLocaleString();
-                            return Number(value).toLocaleString();
-                        }
-                    },
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                    beginAtZero: true
-                }
-            }
+            scales: scaleOptions
         }
     });
 }

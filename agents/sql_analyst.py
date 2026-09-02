@@ -12,7 +12,13 @@ sys.path.append(
 
 from utils.llm_pick import pick_llm, get_message_text
 from utils.database import DatabaseConnection
-from model.schema import AgentSchema, JudgeSchema, SQLGenerationSchema
+from model.schema import (
+    AgentSchema,
+    JudgeSchema,
+    SQLGenerationSchema,
+    StructuredIntentSchema,
+    SemanticValidationSchema
+)
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
 
@@ -332,19 +338,30 @@ CRITICAL SCHEMA LIMITATION RULES:
      (or date match: `u.city = w.city AND rides.requested_at::date = w.recorded_at::date`).
    - COMPARATIVE WEATHER QUERIES: If the user asks whether rain increases, decreases, or is associated with cancellations, fares, or surge in a city (e.g. Ottawa) or overall, generate a query comparing BOTH rainy and non-rainy conditions (e.g. `w.is_rainy`, ride count, cancellations, cancellation rate) so a direct, valid comparison can be made:
      `SELECT u.city, w.is_rainy, COUNT(r.ride_id) AS total_rides, SUM(CASE WHEN r.status = 'cancelled' THEN 1 ELSE 0 END) AS cancellations, ROUND(SUM(CASE WHEN r.status = 'cancelled' THEN 1 ELSE 0 END) * 100.0 / COUNT(r.ride_id), 2) AS cancellation_rate FROM public.rides r JOIN public.users u ON r.rider_id = u.user_id JOIN public.weather_data w ON u.city = w.city AND DATE_TRUNC('hour', r.requested_at) = w.recorded_at WHERE u.city ILIKE 'Ottawa' GROUP BY u.city, w.is_rainy;`
-   - POSTGRESQL TEMPORAL & DATE-TRUNCATION GROUP BY RULES:
-     * When grouping or aggregating by time periods (monthly, daily, hourly, weekly):
-       - ALWAYS group by the single `DATE_TRUNC` expression directly:
-         `SELECT DATE_TRUNC('month', requested_at) AS month_start, COUNT(*) AS total_rides, SUM(fare) AS total_revenue FROM public.rides GROUP BY DATE_TRUNC('month', requested_at) ORDER BY month_start;`
-       - If separate year and month columns are needed, derive them from `month_start` in a CTE / outer query, OR use `EXTRACT(YEAR FROM DATE_TRUNC('month', requested_at))` with `GROUP BY DATE_TRUNC('month', requested_at)`:
-         `WITH monthly_summary AS (SELECT DATE_TRUNC('month', requested_at) AS month_start, COUNT(*) AS total_rides, SUM(fare) AS total_revenue FROM public.rides GROUP BY DATE_TRUNC('month', requested_at)) SELECT month_start, EXTRACT(YEAR FROM month_start)::int AS year, EXTRACT(MONTH FROM month_start)::int AS month, total_rides, total_revenue FROM monthly_summary ORDER BY month_start;`
-       - STRICT POSTGRESQL RULE: NEVER write `DATE_TRUNC('month', requested_at) AS month_start, EXTRACT(YEAR FROM requested_at) ... GROUP BY year, month`. In PostgreSQL, every non-aggregated column or expression in SELECT must appear in the GROUP BY clause.
-   - RESULT LIMITING RULES (Context-Aware):
-     * If the user specifically asks for top/bottom/first N rows (e.g., 'top 5', 'first 10', 'city with highest rainfall'), add LIMIT N.
-     * For group-by aggregations (e.g., by date, by status, by city across all 8 cities, by payment method, coverage comparisons), do NOT arbitrarily add LIMIT 10 so the full aggregated dataset is available.
-     * For large raw table dumps without aggregation (e.g., SELECT * FROM rides), apply a reasonable LIMIT 50.
-   - For text comparisons, use case-insensitive matching with ILIKE.
-   - Set "explanation": ""
+    - TWO-STAGE RANKING & DETERMINISTIC TIE-BREAKING RULES:
+      * If the user requests "Top N by X, ranked by Y" (e.g. 'top 10 drivers by completed rides, ranked by completion rate'):
+        1. First calculate driver metrics and apply explicit threshold filters (e.g. HAVING COUNT(*) >= 5).
+        2. Select the top N records based on selection metric X with deterministic tie-breaking (e.g. ORDER BY completed_rides DESC, driver_id ASC LIMIT 10) in a CTE or subquery.
+        3. In the outer query, order those selected records by presentation metric Y (e.g. ORDER BY completion_rate DESC, driver_id ASC).
+        4. NEVER apply LIMIT 10 directly on Y when the user asked for top 10 by X!
+      * For any Top/Bottom N selection, always add a deterministic secondary tie-breaker (e.g. `ORDER BY <metric> DESC, <entity_id> ASC LIMIT N`) to guarantee reproducible ordering across ties.
+    - RATE / PERCENTAGE DIFFERENCE & COMPARISON RULES:
+      * When comparing or subtracting two rate/percentage values (e.g. driver cancellation rate vs overall cancellation rate), express the difference in percentage points:
+        `ROUND((td.cancellation_rate - o.overall_cancellation_rate) * 100, 2) AS cancellation_rate_diff_pp`
+        (Use the `_diff_pp` or `_pp` suffix for percentage point differences).
+    - POSTGRESQL TEMPORAL & DATE-TRUNCATION GROUP BY RULES:
+      * When grouping or aggregating by time periods (monthly, daily, hourly, weekly):
+        - ALWAYS group by the single `DATE_TRUNC` expression directly:
+          `SELECT DATE_TRUNC('month', requested_at) AS month_start, COUNT(*) AS total_rides, SUM(fare) AS total_revenue FROM public.rides GROUP BY DATE_TRUNC('month', requested_at) ORDER BY month_start;`
+        - If separate year and month columns are needed, derive them from `month_start` in a CTE / outer query, OR use `EXTRACT(YEAR FROM DATE_TRUNC('month', requested_at))` with `GROUP BY DATE_TRUNC('month', requested_at)`:
+          `WITH monthly_summary AS (SELECT DATE_TRUNC('month', requested_at) AS month_start, COUNT(*) AS total_rides, SUM(fare) AS total_revenue FROM public.rides GROUP BY DATE_TRUNC('month', requested_at)) SELECT month_start, EXTRACT(YEAR FROM month_start)::int AS year, EXTRACT(MONTH FROM month_start)::int AS month, total_rides, total_revenue FROM monthly_summary ORDER BY month_start;`
+        - STRICT POSTGRESQL RULE: NEVER write `DATE_TRUNC('month', requested_at) AS month_start, EXTRACT(YEAR FROM requested_at) ... GROUP BY year, month`. In PostgreSQL, every non-aggregated column or expression in SELECT must appear in the GROUP BY clause.
+    - RESULT LIMITING RULES (Context-Aware):
+      * If the user specifically asks for top/bottom/first N rows (e.g., 'top 5', 'first 10', 'city with highest rainfall'), add LIMIT N with deterministic secondary tie-breaker.
+      * For group-by aggregations (e.g., by date, by status, by city across all 8 cities, by payment method, coverage comparisons), do NOT arbitrarily add LIMIT 10 so the full aggregated dataset is available.
+      * For large raw table dumps without aggregation (e.g., SELECT * FROM rides), apply a reasonable LIMIT 50.
+    - For text comparisons, use case-insensitive matching with ILIKE.
+    - Set "explanation": ""
 
 USER QUESTION:
 {curated_question}
@@ -417,12 +434,323 @@ def validate_sql_node(state: AgentSchema) -> AgentSchema:
     return state
 
 
+# ============================================================
+# 4.1 INTENT-AWARE SEMANTIC VALIDATION & REGENERATION
+# ============================================================
+
+def is_complex_analytical_query(question: str, sql: str) -> bool:
+    """
+    Fast-path heuristic to determine whether a query involves complex analytical intent
+    (e.g., top/bottom N selection, presentation ranking, rate calculations, thresholds, comparisons)
+    or is a lightweight single-table lookup/count that does not require the LLM semantic judge.
+    """
+    if not question and not sql:
+        return False
+
+    q_lower = (question or "").lower()
+    sql_lower = (sql or "").lower()
+
+    # 1. Triggers for selection / presentation ranking duality & top/bottom N
+    ranking_triggers = [
+        r"\btop\b", r"\bbottom\b", r"\bhighest\b", r"\blowest\b", r"\bmost\b", r"\bleast\b",
+        r"\brank\b", r"\branking\b", r"\branked\b", r"\border\s+by\b", r"\bfirst\s+\d+\b",
+        r"\blast\s+\d+\b"
+    ]
+    for pattern in ranking_triggers:
+        if re.search(pattern, q_lower):
+            return True
+
+    # 2. Triggers for rates, percentages, ratios
+    rate_triggers = [
+        r"\brate\b", r"\bpercentage\b", r"\bpercent\b", r"\bpct\b", r"\bratio\b",
+        r"\bcompletion\b", r"\bcancellation\b", r"\bcancel\b"
+    ]
+    for pattern in rate_triggers:
+        if re.search(pattern, q_lower):
+            return True
+
+    # 3. Triggers for explicit analytical comparisons
+    comparison_triggers = [
+        r"\bcompare\b", r"\bcomparison\b", r"\bvs\b", r"\bversus\b", r"\boverall\b",
+        r"\bagainst\b", r"\bdifference\b"
+    ]
+    for pattern in comparison_triggers:
+        if re.search(pattern, q_lower):
+            return True
+
+    # 4. Triggers for aggregated threshold filters
+    threshold_triggers = [
+        r"\bat\s+least\b", r"\bat\s+most\b", r"\bmore\s+than\b", r"\bless\s+than\b",
+        r"\bminimum\b", r"\bmaximum\b", r"\bgreater\s+than\b", r"\bhaving\b"
+    ]
+    for pattern in threshold_triggers:
+        if re.search(pattern, q_lower):
+            return True
+
+    # 5. SQL structure triggers (CTE, HAVING, multiple aggregations, window functions)
+    if re.search(r"\bWITH\b", sql, re.IGNORECASE) or re.search(r"\bHAVING\b", sql, re.IGNORECASE) or re.search(r"\bOVER\s*\(", sql, re.IGNORECASE):
+        return True
+
+    return False
+
+
+def extract_intent_structured(curated_question: str) -> StructuredIntentSchema:
+    """
+    Extracts a lightweight structured analytical intent representation from the user's question.
+    Does NOT generate SQL.
+    """
+    llm = pick_llm("low")
+    prompt = f"""
+You are an expert analytical intent extractor for an SQL Data Analyst assistant.
+Analyze the user's analytical question and translate it into a structured JSON representation of intent.
+
+IMPORTANT INTENT EXTRACTION RULES:
+1. "Selection Ranking" (selection) determines WHICH records belong in the Top/Bottom N (e.g., "top 10 drivers by completed rides" -> metric: "completed_rides", n: 10, direction: "desc").
+2. "Presentation Ranking" (presentation_order) determines the ORDER in which the selected records should be displayed (e.g., "then rank those 10 by completion rate" -> metric: "completion_rate", direction: "desc").
+3. "Filters" captures explicit criteria and thresholds (e.g., "at least 5 assigned rides" -> metric: "assigned_rides", operator: ">=", value: 5).
+4. "Metrics" lists all metrics requested to be calculated (e.g. assigned_rides, completed_rides, cancellation_rate, completion_rate).
+5. "Comparisons" lists any comparisons requested (e.g. "driver cancellation rate vs overall cancellation rate").
+6. Do NOT write SQL. Return ONLY valid JSON.
+
+USER QUESTION:
+{curated_question}
+
+JSON FORMAT:
+{{
+  "entity": "driver",
+  "time_range": "2026",
+  "selection": {{
+    "type": "top_n",
+    "n": 10,
+    "metric": "completed_rides",
+    "direction": "desc"
+  }},
+  "presentation_order": {{
+    "metric": "completion_rate",
+    "direction": "desc"
+  }},
+  "filters": [
+    {{
+      "metric": "assigned_rides",
+      "operator": ">=",
+      "value": 5
+    }}
+  ],
+  "metrics": ["assigned_rides", "completed_rides", "completion_rate", "cancellation_rate"],
+  "comparisons": ["driver cancellation rate vs overall driver cancellation rate"]
+}}
+"""
+    try:
+        response = llm.invoke(prompt)
+        raw_text = get_message_text(response)
+        data = extract_json(raw_text)
+        return StructuredIntentSchema.model_validate(data)
+    except Exception as e:
+        return StructuredIntentSchema(
+            entity="",
+            time_range="",
+            selection=None,
+            presentation_order=None,
+            filters=[],
+            metrics=[],
+            comparisons=[]
+        )
+
+
+def evaluate_sql_semantics(
+    curated_question: str,
+    intent: Optional[Dict[str, Any]],
+    generated_sql: str
+) -> SemanticValidationSchema:
+    """
+    Evaluates whether the generated SQL faithfully and accurately implements the user's analytical intent.
+    Uses pick_llm("high").
+    """
+    llm = pick_llm("high")
+    intent_str = json.dumps(intent, indent=2) if intent else "{}"
+
+    prompt = f"""
+You are an expert PostgreSQL Semantic Validator and Senior Analytics Engineer.
+
+Your task is to verify whether the generated PostgreSQL query faithfully and accurately implements the user's analytical intent without logical flaws.
+
+USER QUESTION:
+{curated_question}
+
+EXTRACTED INTENT:
+{intent_str}
+
+GENERATED SQL QUERY:
+{generated_sql}
+
+CRITICAL SEMANTIC VALIDATION RULES:
+1. SELECTION RANKING VS PRESENTATION RANKING:
+   - If the user requested "Top N by X" (e.g. top 10 drivers by completed rides), the selection of WHICH records are chosen MUST be based on X (e.g. in a CTE/subquery: `ORDER BY completed DESC LIMIT 10`).
+   - If the user ALSO requested "rank those N by Y" (e.g. rank those 10 by completion rate), ordering by Y must happen on the already-selected records (e.g. in the outer query: `SELECT * FROM top_10 ORDER BY completion_rate DESC`).
+   - REJECT as INVALID any query that does `ORDER BY completion_rate DESC LIMIT 10` where completion_rate was merely the presentation order, because that selects the wrong set of 10 drivers!
+
+2. THRESHOLD & FILTER VERIFICATION:
+   - Verify that all requested explicit thresholds (e.g. "at least 5 assigned rides" -> `HAVING COUNT(*) >= 5` or `assigned >= 5`) are present.
+   - If threshold condition is missing, mark invalid.
+
+3. TEMPORAL CONSTRAINT VERIFICATION:
+   - Verify that requested time boundaries (e.g. "in 2026") are respected using semantically equivalent PostgreSQL expressions (e.g. `EXTRACT(YEAR FROM requested_at) = 2026` or date range bounds).
+   - If time filter is missing or targets the wrong year/period, mark invalid.
+
+4. METRIC & RATE CALCULATION FORMULAS:
+   - Verify requested rates use correct denominators (e.g. completion rate = completed / assigned, cancellation rate = cancelled / assigned).
+   - If required metrics are omitted, mark invalid.
+
+5. COMPARISONS:
+   - If a comparison to overall metrics is requested (e.g. driver cancellation rate vs overall cancellation rate), verify the SQL calculates or exposes the comparative baseline.
+
+6. AVOID FALSE POSITIVES ON VALID EQUIVALENT SQL:
+   - Do NOT reject queries for harmless syntactic differences. `COUNT(*) FILTER (WHERE status = 'completed')` and `SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)` are 100% equivalent.
+   - Standard division with NULLIF or type casting is equivalent.
+   - Queries with straightforward CTEs or subqueries are valid if they achieve the correct logic.
+
+OUTPUT FORMAT:
+Return ONLY valid JSON matching this schema:
+{{
+  "is_semantically_valid": true,
+  "issues": [],
+  "correction_instruction": ""
+}}
+or:
+{{
+  "is_semantically_valid": false,
+  "issues": [
+    "Specific analytical mismatch description"
+  ],
+  "correction_instruction": "Precise instruction explaining how the SQL must be restructured to fulfill the intent."
+}}
+"""
+    try:
+        response = llm.invoke(prompt)
+        raw_text = get_message_text(response)
+        data = extract_json(raw_text)
+        return SemanticValidationSchema.model_validate(data)
+    except Exception as e:
+        return SemanticValidationSchema(
+            is_semantically_valid=True,
+            issues=[],
+            correction_instruction=""
+        )
+
+
+def semantic_validation_node(state: AgentSchema) -> AgentSchema:
+    # Check if query is complex enough to require semantic validation
+    if not is_complex_analytical_query(state.curated_ques, state.generated_sql_query):
+        state.is_semantically_valid = True
+        state.semantic_issues = []
+        state.semantic_correction_instruction = ""
+        return state
+
+    # Extract intent if not already done
+    if not state.structured_intent:
+        intent_obj = extract_intent_structured(state.curated_ques)
+        state.structured_intent = intent_obj.model_dump()
+
+    # Evaluate semantics
+    val_result = evaluate_sql_semantics(
+        state.curated_ques,
+        state.structured_intent,
+        state.generated_sql_query
+    )
+
+    state.is_semantically_valid = val_result.is_semantically_valid
+    state.semantic_issues = val_result.issues
+    state.semantic_correction_instruction = val_result.correction_instruction or ""
+
+    if not state.is_semantically_valid:
+        print(f"[Semantic Validation] Intent issue detected: {state.semantic_issues}")
+
+    return state
+
+
+def regenerate_sql_with_intent(state: AgentSchema) -> AgentSchema:
+    state.semantic_validation_attempts += 1
+    db = DatabaseConnection()
+    schema_info = db.schema_details("public")
+
+    prompt = f"""
+You are an expert PostgreSQL Data Analyst.
+
+The previous SQL query you generated was found to have a semantic analytical flaw that does not faithfully implement the user's intent.
+
+USER QUESTION:
+{state.curated_ques}
+
+DATABASE SCHEMA:
+{schema_info}
+
+PREVIOUS FAILED SQL QUERY:
+{state.generated_sql_query}
+
+SEMANTIC ISSUES IDENTIFIED:
+{chr(10).join('- ' + issue for issue in state.semantic_issues)}
+
+CORRECTION INSTRUCTIONS:
+{state.semantic_correction_instruction}
+
+CRITICAL RULES:
+1. Fix the semantic flaws explicitly following the correction instructions above.
+2. If the user asks for "Top N by X, then rank/order by Y", use a Common Table Expression (WITH CTE):
+   - First CTE: Calculate base metrics and apply threshold filters (e.g. HAVING COUNT(*) >= 5).
+   - Second CTE: Select the Top N records ordered by X with deterministic tie-breaker: `ORDER BY completed_rides DESC, driver_id ASC LIMIT 10`.
+   - Outer Query: Select from the Top N CTE and order by Y: `ORDER BY completion_rate DESC, driver_id ASC`.
+3. When comparing or subtracting rate/percentage metrics, express the difference in percentage points:
+   `ROUND((td.cancellation_rate - o.overall_cancellation_rate) * 100, 2) AS cancellation_rate_diff_pp`
+4. Return ONLY valid JSON:
+{{
+  "can_be_answered": true,
+  "sql_query": "YOUR_CORRECTED_POSTGRESQL_QUERY_HERE;",
+  "explanation": ""
+}}
+"""
+    try:
+        llm = pick_llm("high")
+        response = llm.invoke(prompt)
+        raw_text = get_message_text(response)
+        data = extract_json(raw_text)
+        validated = SQLGenerationSchema.model_validate(data)
+        if validated.can_be_answered and validated.sql_query:
+            state.generated_sql_query = validated.sql_query.strip()
+            state.can_be_answered = True
+            state.error = ""
+        else:
+            state.can_be_answered = False
+            state.schema_explanation = validated.explanation or ""
+    except Exception as e:
+        state.error = f"Semantic regeneration error: {e}"
+
+    return state
+
+
+def semantic_error_node(state: AgentSchema) -> AgentSchema:
+    state.final_answer = (
+        "⚠️ **Unable to Generate Faithful Analytical Query**\n\n"
+        "The analytical question involves complex multi-criteria constraints that could not be verified with 100% semantic fidelity after self-healing attempts.\n\n"
+        "**Semantic Issues:**\n" + "\n".join(f"- {issue}" for issue in state.semantic_issues)
+    )
+    state.messages = state.messages + [AIMessage(content=state.final_answer)]
+    return state
+
+
 def route_after_validation(state: AgentSchema) -> str:
     if not state.can_be_answered:
         return "unanswerable_question"
     if state.error:
         return "invalid_sql"
-    return "is_safe_sql"
+    return "semantic_validation_node"
+
+
+def route_after_semantic_validation(state: AgentSchema) -> str:
+    if state.is_semantically_valid:
+        return "is_safe_sql"
+    if state.semantic_validation_attempts < 2:
+        return "regenerate_sql_with_intent"
+    return "semantic_error_node"
 
 
 # ============================================================
@@ -916,6 +1244,8 @@ ANALYTICAL INTERPRETATION RULES:
    - Express results purely in terms of observed numbers and correlations (e.g., "During the observed period...", "coincided with..."). NEVER state that rain *causes* cancellations, surge pricing, or higher fares.
 7. FORMATTING:
    - Format multi-row results neatly with markdown tables or bullet points.
+8. PERCENTAGE POINT DIFFERENCES:
+   - When reporting differences or comparisons between rate/percentage metrics (e.g. columns ending in `_pp` or `_diff_pp` like `cancellation_rate_diff_pp`), format and explain the difference explicitly in "percentage points" or "pp" (e.g., "-9.52 percentage points" or "+2.98 pp"), NOT as a percentage fraction like "-0.10%".
 
 Provide a concise, professional, and helpful answer:
 """
@@ -942,6 +1272,9 @@ sql_agent_graph.add_node("curate_ques", curate_ques)
 sql_agent_graph.add_node("prompt_query_context", prompt_query_context)
 sql_agent_graph.add_node("generate_sql", generate_sql)
 sql_agent_graph.add_node("validate_sql_node", validate_sql_node)
+sql_agent_graph.add_node("semantic_validation_node", semantic_validation_node)
+sql_agent_graph.add_node("regenerate_sql_with_intent", regenerate_sql_with_intent)
+sql_agent_graph.add_node("semantic_error_node", semantic_error_node)
 sql_agent_graph.add_node("unanswerable_question", unanswerable_question)
 sql_agent_graph.add_node("invalid_sql", invalid_sql)
 sql_agent_graph.add_node("is_safe_sql", is_safe_sql)
@@ -961,12 +1294,26 @@ sql_agent_graph.add_conditional_edges(
     {
         "unanswerable_question": "unanswerable_question",
         "invalid_sql": "invalid_sql",
-        "is_safe_sql": "is_safe_sql"
+        "semantic_validation_node": "semantic_validation_node"
     }
 )
 
+sql_agent_graph.add_conditional_edges(
+    "semantic_validation_node",
+    route_after_semantic_validation,
+    {
+        "is_safe_sql": "is_safe_sql",
+        "regenerate_sql_with_intent": "regenerate_sql_with_intent",
+        "semantic_error_node": "semantic_error_node"
+    }
+)
+
+# Self-healing loop: regenerate_sql_with_intent feeds back to validate_sql_node
+sql_agent_graph.add_edge("regenerate_sql_with_intent", "validate_sql_node")
+
 sql_agent_graph.add_edge("unanswerable_question", END)
 sql_agent_graph.add_edge("invalid_sql", END)
+sql_agent_graph.add_edge("semantic_error_node", END)
 
 sql_agent_graph.add_conditional_edges(
     "is_safe_sql",

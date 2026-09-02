@@ -1270,16 +1270,16 @@ html, body {
    ========================================================================== */
 
 .data-vis-container {
-    background: rgba(15, 23, 42, 0.75);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(12px);
-    border-radius: var(--border-radius-md);
-    padding: 14px;
-    margin-top: 12px;
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(16px);
+    border-radius: var(--border-radius-lg);
+    padding: 16px;
+    margin-top: 14px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    gap: 14px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
     width: 100%;
     max-width: 100%;
     min-width: 0;
@@ -1289,39 +1289,40 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding-bottom: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    padding-bottom: 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 10px;
 }
 
 .vis-title {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     font-family: var(--font-heading);
-    font-weight: 600;
-    font-size: 0.9rem;
+    font-weight: 700;
+    font-size: 0.95rem;
     color: var(--text-main);
+    letter-spacing: -0.01em;
 }
 
 .vis-title i {
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
     color: var(--primary-emerald);
 }
 
 .btn-export-csv {
     display: flex;
     align-items: center;
-    gap: 5px;
-    padding: 4px 10px;
+    gap: 6px;
+    padding: 5px 12px;
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid var(--border-subtle);
     color: var(--text-muted);
     border-radius: 6px;
-    font-size: 0.76rem;
-    font-weight: 500;
+    font-size: 0.78rem;
+    font-weight: 600;
     cursor: pointer;
     transition: var(--transition-fast);
 }
@@ -1329,42 +1330,28 @@ html, body {
 .btn-export-csv:hover {
     background: rgba(16, 185, 129, 0.15);
     border-color: var(--primary-emerald);
-    color: var(--text-main);
+    color: var(--primary-emerald);
+    transform: translateY(-1px);
 }
 
 .btn-export-csv i {
-    width: 12px;
-    height: 12px;
+    width: 13px;
+    height: 13px;
 }
 
-.vis-chart-box {
-    position: relative;
-    width: 100%;
-    max-width: 100%;
-    min-height: 220px;
-    max-height: 300px;
-    padding: 4px 0;
-}
-
-/* KPI Cards Presentation */
-.vis-kpi-container {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 2px 0;
-}
-
+/* Smart KPI Summary Cards */
 .vis-kpi-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 10px;
+    width: 100%;
 }
 
 .vis-kpi-card {
-    background: linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.9));
-    border: 1px solid rgba(16, 185, 129, 0.25);
-    border-radius: 8px;
-    padding: 12px 14px;
+    background: linear-gradient(135deg, rgba(30, 41, 59, 0.75), rgba(15, 23, 42, 0.9));
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 10px 14px;
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -1374,78 +1361,132 @@ html, body {
 
 .vis-kpi-card:hover {
     transform: translateY(-2px);
-    border-color: var(--primary-emerald);
+    border-color: rgba(16, 185, 129, 0.4);
+}
+
+.vis-kpi-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
 }
 
 .vis-kpi-label {
     font-size: 0.68rem;
     font-weight: 600;
     letter-spacing: 0.05em;
-    color: #9CA3AF;
+    color: var(--text-dim);
     text-transform: uppercase;
+}
+
+.vis-kpi-icon {
+    width: 14px;
+    height: 14px;
+    color: var(--accent-cyan);
+    opacity: 0.8;
 }
 
 .vis-kpi-value {
     font-family: var(--font-heading);
-    font-size: 1.4rem;
+    font-size: 1.35rem;
     font-weight: 700;
-    color: #F9FAFB;
+    color: var(--text-main);
     line-height: 1.2;
 }
 
-.vis-kpi-comparison {
-    background: rgba(0, 0, 0, 0.25);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+/* Factual Key Insight Pill */
+.vis-insight-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: linear-gradient(90deg, rgba(16, 185, 129, 0.1), rgba(6, 182, 212, 0.05));
+    border: 1px solid rgba(16, 185, 129, 0.25);
     border-radius: 8px;
     padding: 8px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
+    font-size: 0.82rem;
+    color: #E5E7EB;
+    line-height: 1.4;
 }
 
-.kpi-comp-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.kpi-comp-title {
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.kpi-comp-title i {
-    width: 13px;
-    height: 13px;
-    color: var(--accent-cyan);
-}
-
-.kpi-comp-badge {
-    font-size: 0.78rem;
-    font-weight: 600;
+.vis-insight-box i {
+    width: 16px;
+    height: 16px;
     color: var(--primary-emerald);
-    background: rgba(16, 185, 129, 0.12);
-    padding: 2px 7px;
+    flex-shrink: 0;
+}
+
+/* Percentage Point Difference Badges */
+.diff-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
     border-radius: 12px;
-    border: 1px solid rgba(16, 185, 129, 0.25);
+    font-size: 0.76rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
 }
 
-.kpi-comp-bar-track {
-    width: 100%;
-    height: 6px;
+.diff-better {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--primary-emerald);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.diff-worse {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--accent-red);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+.diff-neutral {
     background: rgba(255, 255, 255, 0.08);
-    border-radius: 3px;
-    overflow: hidden;
+    color: var(--text-dim);
+    border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-.kpi-comp-bar-fill {
-    height: 100%;
-    background: linear-gradient(90deg, #10B981, #06B6D4);
-    border-radius: 3px;
-    transition: width 0.6s ease;
+.diff-tag i {
+    width: 12px;
+    height: 12px;
+}
+
+/* Rank Badge */
+.rank-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 6px;
+    font-size: 0.74rem;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-muted);
+}
+
+.rank-badge.rank-gold {
+    background: rgba(245, 158, 11, 0.2);
+    color: #FBBF24;
+    border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.rank-badge.rank-silver {
+    background: rgba(156, 163, 175, 0.2);
+    color: #E5E7EB;
+    border: 1px solid rgba(156, 163, 175, 0.4);
+}
+
+.rank-badge.rank-bronze {
+    background: rgba(180, 83, 9, 0.2);
+    color: #F59E0B;
+    border: 1px solid rgba(180, 83, 9, 0.4);
+}
+
+.vis-chart-box {
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+    min-height: 240px;
+    max-height: 340px;
+    padding: 6px 0;
 }
 
 /* Interactive Result Table (Scrollable Container) */
